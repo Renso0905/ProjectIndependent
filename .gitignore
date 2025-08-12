@@ -1,0 +1,37 @@
+# --- Node / Next.js (apps/web) ---
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/.vercel/
+apps/web/.env*
+apps/web/npm-debug.log*
+# Keep example envs if you add them later
+!apps/web/.env.example
+
+# --- Python (apps/api) ---
+apps/api/__pycache__/
+apps/api/.pytest_cache/
+apps/api/env/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# --- Databases (don’t commit dev DBs) ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Other virtual envs at repo root (Windows/macOS/Linux variants) ---
+env/
+.venv/
+venv/
+
+# --- Logs ---
+logs/
+*.log
+
+# --- IDE / OS files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
