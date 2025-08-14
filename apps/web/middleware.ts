@@ -1,13 +1,15 @@
-import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 
-async function getPayload(token: string | undefined) {
-  if (!token) return null;
+const JWT_SECRET = process.env.JWT_SECRET || "change-me";
+
+async function verifyToken(token: string) {
   try {
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET!);
-    const { payload } = await jwtVerify(token, secret);
-    return payload as { sub: string; role: "BCBA" | "RBT" };
+    const { payload } = await jwtVerify(
+      token,
+      new TextEncoder().encode(JWT_SECRET)
+    );
+    return payload as { sub?: string; role?: "BCBA" | "RBT" };
   } catch {
     return null;
   }
@@ -15,58 +17,52 @@ async function getPayload(token: string | undefined) {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const token = req.cookies.get("pi_access_token")?.value || "";
+  const user = token ? await verifyToken(token) : null;
 
-  // Only handle these paths
-  if (
-    !pathname.startsWith("/dashboard") &&
-    !pathname.startsWith("/login") &&
-    !pathname.startsWith("/clients")
-  ) {
+  // Public routes
+  if (pathname === "/" || pathname.startsWith("/login")) {
+    // already logged in? send to dashboard
+    if (user?.role === "BCBA") {
+      return NextResponse.redirect(new URL("/dashboard/bcba", req.url));
+    }
+    if (user?.role === "RBT") {
+      return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
+    }
     return NextResponse.next();
   }
 
-  const token = req.cookies.get("pi_access_token")?.value;
-  const payload = await getPayload(token);
+  // Auth-required routes (both roles): dashboards & collection
+  const authRequired =
+    pathname.startsWith("/dashboard") || pathname.startsWith("/collect");
+  if (authRequired) {
+    if (!user) {
+      // default to RBT login if unknown; adjust if you prefer BCBA
+      const login = pathname.includes("/bcba")
+        ? "/login/bcba"
+        : pathname.includes("/rbt")
+        ? "/login/rbt"
+        : "/login/rbt";
+      return NextResponse.redirect(new URL(login, req.url));
+    }
+    // Role-specific dashboard gating
+    if (pathname.startsWith("/dashboard/bcba") && user.role !== "BCBA") {
+      return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
+    }
+    if (pathname.startsWith("/dashboard/rbt") && user.role !== "RBT") {
+      return NextResponse.redirect(new URL("/dashboard/bcba", req.url));
+    }
+    // /collect is allowed for both roles
+    return NextResponse.next();
+  }
 
-  // --- BCBA-only Clients pages ---
+  // BCBA-only parts of the app (clients management)
   if (pathname.startsWith("/clients")) {
-    // Not signed in → go to BCBA login
-    if (!payload) {
-      const url = req.nextUrl.clone();
-      url.pathname = "/login/bcba";
-      return NextResponse.redirect(url);
+    if (!user) {
+      return NextResponse.redirect(new URL("/login/bcba", req.url));
     }
-    // Signed in but not BCBA → send to RBT dashboard
-    if (payload.role !== "BCBA") {
-      const url = req.nextUrl.clone();
-      url.pathname = "/dashboard/rbt";
-      return NextResponse.redirect(url);
-    }
-    return NextResponse.next();
-  }
-
-  // --- Protect dashboards ---
-  if (pathname.startsWith("/dashboard")) {
-    if (!payload) {
-      const url = req.nextUrl.clone();
-      url.pathname = pathname.startsWith("/dashboard/bcba") ? "/login/bcba" : "/login/rbt";
-      return NextResponse.redirect(url);
-    }
-    if (pathname.startsWith("/dashboard/bcba") && payload.role !== "BCBA") {
-      const url = req.nextUrl.clone();
-      url.pathname = "/login/bcba";
-      return NextResponse.redirect(url);
-    }
-    // RBT dashboard allows RBT or BCBA
-    return NextResponse.next();
-  }
-
-  // --- Redirect away from login pages if already signed in ---
-  if (pathname.startsWith("/login")) {
-    if (payload) {
-      const url = req.nextUrl.clone();
-      url.pathname = payload.role === "BCBA" ? "/dashboard/bcba" : "/dashboard/rbt";
-      return NextResponse.redirect(url);
+    if (user.role !== "BCBA") {
+      return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
     }
     return NextResponse.next();
   }
@@ -74,4 +70,6 @@ export async function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/dashboard/:path*", "/login/:path*", "/clients/:path*"] };
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};

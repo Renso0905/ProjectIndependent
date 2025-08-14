@@ -1,7 +1,8 @@
 "use client";
 import { useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001/api";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
 
 export default function NewClientPage() {
   const [name, setName] = useState("");
@@ -31,11 +32,21 @@ export default function NewClientPage() {
 
       const text = await res.text(); // read raw for better debug
       let data: any = null;
-      try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON error */ }
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        /* non-JSON error */
+      }
 
       if (!res.ok) {
-        setDebug(`POST ${API_BASE}/clients → ${res.status}\n${text || "(no body)"}`);
-        throw new Error(data?.detail || data?.error || `Create failed (HTTP ${res.status})`);
+        setDebug(
+          `POST ${API_BASE}/clients → ${res.status}\n${
+            text || "(no body)"
+          }`,
+        );
+        throw new Error(
+          data?.detail || data?.error || `Create failed (HTTP ${res.status})`,
+        );
       }
 
       // Success → back to BCBA dashboard
@@ -51,11 +62,21 @@ export default function NewClientPage() {
     <main className="min-h-screen flex items-center justify-center p-6">
       <div className="w-full max-w-xl">
         <div className="mb-3">
-          <a href="/dashboard/bcba" className="px-3 py-2 border rounded-lg hover:bg-gray-50">← Back to BCBA Dashboard</a>
+          <a
+            href="/dashboard/bcba"
+            className="px-3 py-2 border rounded-lg hover:bg-gray-50"
+          >
+            ← Back to BCBA Dashboard
+          </a>
         </div>
 
-        <form onSubmit={onSubmit} className="border rounded-2xl p-6 grid gap-3 bg-white">
-          <h1 className="text-2xl font-semibold text-center mb-2">Create Client</h1>
+        <form
+          onSubmit={onSubmit}
+          className="border rounded-2xl p-6 grid gap-3 bg-white"
+        >
+          <h1 className="text-2xl font-semibold text-center mb-2">
+            Create Client
+          </h1>
 
           <label className="block">
             <span className="text-sm">Name</span>

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001/api";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
 
 export default function HomePage() {
   const [apiStatus, setApiStatus] = useState<string>("checking...");
@@ -10,7 +11,9 @@ export default function HomePage() {
   useEffect(() => {
     fetch(`${API_BASE}/health`, { cache: "no-store" })
       .then((res) => res.json())
-      .then((json) => setApiStatus(`API: ${json.status} (v${json.version})`))
+      .then((json) =>
+        setApiStatus(`API: ${json.status} (v${json.version})`),
+      )
       .catch(() => setApiStatus("API: unreachable"));
   }, []);
 
@@ -19,7 +22,15 @@ export default function HomePage() {
       <h1 style={{ marginBottom: 8 }}>Project Independent</h1>
       <p>This is the Next.js frontend for Project Independent (Phase A).</p>
 
-      <div style={{ marginTop: 16, padding: 16, border: "1px solid #ddd", borderRadius: 8, background: "#fafafa" }}>
+      <div
+        style={{
+          marginTop: 16,
+          padding: 16,
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          background: "#fafafa",
+        }}
+      >
         <strong>Backend status:</strong>
         <div>{apiStatus}</div>
         <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
@@ -28,8 +39,12 @@ export default function HomePage() {
       </div>
 
       <div style={{ marginTop: 24, display: "grid", gap: 12 }}>
-        <a href="/login/bcba" style={linkStyle}>BCBA Login</a>
-        <a href="/login/rbt" style={linkStyle}>RBT Login</a>
+        <a href="/login/bcba" style={linkStyle}>
+          BCBA Login
+        </a>
+        <a href="/login/rbt" style={linkStyle}>
+          RBT Login
+        </a>
       </div>
     </div>
   );

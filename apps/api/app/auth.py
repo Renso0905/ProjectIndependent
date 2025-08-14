@@ -1,21 +1,39 @@
-from datetime import datetime, timedelta, timezone
+# apps/api/app/auth.py
+from datetime import datetime, timedelta
+from typing import Any, Dict
+
 from jose import jwt
 from passlib.context import CryptContext
-from .settings import settings
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt backend
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_ctx.verify(plain, hashed)
 
-def hash_password(plain: str) -> str:
-    return pwd_ctx.hash(plain)
+def get_password_hash(password: str) -> str:
+    """Hash a plaintext password using bcrypt."""
+    return pwd_context.hash(password)
 
-def create_access_token(sub: str, role: str, expires_minutes: int | None = None):
-    exp = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": sub, "role": role, "exp": exp}
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALG)
 
-def decode_token(token: str):
-    return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALG])
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plaintext password against a bcrypt hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(
+    data: Dict[str, Any],
+    secret: str,
+    algorithm: str,
+    minutes: int = 60,
+) -> str:
+    """Create a signed JWT with an exp claim."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=minutes)
+    to_encode.update({"exp": expire})
+    token = jwt.encode(to_encode, secret, algorithm=algorithm)
+    return token
+
+
+def decode_token(token: str, secret: str, algorithm: str) -> Dict[str, Any]:
+    """Decode & verify a JWT; raises on invalid/expired tokens."""
+    return jwt.decode(token, secret, algorithms=[algorithm])
 

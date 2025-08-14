@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001/api";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
 
 type Client = {
   id: number;
@@ -16,7 +17,9 @@ export default function ClientsIndex() {
 
   useEffect(() => {
     fetch(`${API_BASE}/clients`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : r.json().then((d) => Promise.reject(d))))
+      .then((r) =>
+        r.ok ? r.json() : r.json().then((d) => Promise.reject(d)),
+      )
       .then(setRows)
       .catch((e) => setErr(e?.detail || "Failed to load clients"));
   }, []);
@@ -26,8 +29,18 @@ export default function ClientsIndex() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Clients</h1>
         <div className="flex items-center gap-2">
-          <a href="/dashboard/bcba" className="px-3 py-2 border rounded-lg hover:bg-gray-50">← Back to Dashboard</a>
-          <a href="/clients/new" className="px-3 py-2 border rounded-lg hover:bg-gray-50">+ Create Client</a>
+          <a
+            href="/dashboard/bcba"
+            className="px-3 py-2 border rounded-lg hover:bg-gray-50"
+          >
+            ← Back to Dashboard
+          </a>
+          <a
+            href="/clients/new"
+            className="px-3 py-2 border rounded-lg hover:bg-gray-50"
+          >
+            + Create Client
+          </a>
         </div>
       </header>
 
@@ -36,7 +49,11 @@ export default function ClientsIndex() {
 
       {rows && rows.length === 0 && (
         <div className="text-gray-600">
-          No clients yet. <a href="/clients/new" className="underline">Create your first client</a>.
+          No clients yet.{" "}
+          <a href="/clients/new" className="underline">
+            Create your first client
+          </a>
+          .
         </div>
       )}
 
@@ -46,9 +63,14 @@ export default function ClientsIndex() {
             <li key={c.id} className="p-4 flex items-center justify-between">
               <div>
                 <div className="font-medium">{c.name}</div>
-                <div className="text-sm text-gray-600">DOB: {c.birthdate}</div>
+                <div className="text-sm text-gray-600">
+                  DOB: {c.birthdate}
+                </div>
               </div>
-              <a href={`/clients/${c.id}`} className="px-3 py-2 border rounded-lg hover:bg-gray-50">
+              <a
+                href={`/clients/${c.id}`}
+                className="px-3 py-2 border rounded-lg hover:bg-gray-50"
+              >
                 Open
               </a>
             </li>
