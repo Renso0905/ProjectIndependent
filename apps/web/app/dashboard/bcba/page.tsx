@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
+
 type Me = { username: string; role: "BCBA" | "RBT" };
 
 export default function BCBADashboard() {
@@ -47,6 +48,9 @@ export default function BCBADashboard() {
         <div className="flex flex-wrap gap-3">
           <a href="/collect" className="px-4 py-2 border rounded-lg hover:bg-gray-50">
             ▶ Start Data Collection
+          </a>
+          <a href="/analysis" className="px-4 py-2 border rounded-lg hover:bg-gray-50">
+            📈 Data Analysis
           </a>
           <a href="/clients/new" className="px-4 py-2 border rounded-lg hover:bg-gray-50">
             + Create Client

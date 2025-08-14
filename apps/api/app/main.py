@@ -12,6 +12,7 @@ from .routers.auth import router as auth_router
 from .routers.clients import router as clients_router
 from .routers.collect import router as collect_router
 from .routers.sessions import router as sessions_router
+from .routers.analysis import router as analysis_router  # NEW
 
 app = FastAPI(title="Project Independent API", version="0.2.1")
 
@@ -43,3 +44,4 @@ app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(clients_router, prefix="/api", tags=["clients"])
 app.include_router(collect_router, prefix="/api", tags=["collect"])
 app.include_router(sessions_router, prefix="/api", tags=["sessions"])
+app.include_router(analysis_router, prefix="/api", tags=["analysis"])  # NEW

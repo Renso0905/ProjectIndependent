@@ -22,7 +22,7 @@ export async function middleware(req: NextRequest) {
 
   // Public routes
   if (pathname === "/" || pathname.startsWith("/login")) {
-    // already logged in? send to dashboard
+    // If already logged in, redirect to the right dashboard
     if (user?.role === "BCBA") {
       return NextResponse.redirect(new URL("/dashboard/bcba", req.url));
     }
@@ -32,12 +32,14 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Auth-required routes (both roles): dashboards & collection
+  // Routes that require authentication for any role
   const authRequired =
-    pathname.startsWith("/dashboard") || pathname.startsWith("/collect");
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/collect") ||
+    pathname.startsWith("/analysis");
+
   if (authRequired) {
     if (!user) {
-      // default to RBT login if unknown; adjust if you prefer BCBA
       const login = pathname.includes("/bcba")
         ? "/login/bcba"
         : pathname.includes("/rbt")
@@ -45,25 +47,23 @@ export async function middleware(req: NextRequest) {
         : "/login/rbt";
       return NextResponse.redirect(new URL(login, req.url));
     }
-    // Role-specific dashboard gating
+
+    // Role-gated dashboards
     if (pathname.startsWith("/dashboard/bcba") && user.role !== "BCBA") {
       return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
     }
     if (pathname.startsWith("/dashboard/rbt") && user.role !== "RBT") {
       return NextResponse.redirect(new URL("/dashboard/bcba", req.url));
     }
-    // /collect is allowed for both roles
-    return NextResponse.next();
-  }
 
-  // BCBA-only parts of the app (clients management)
-  if (pathname.startsWith("/clients")) {
-    if (!user) {
-      return NextResponse.redirect(new URL("/login/bcba", req.url));
+    // BCBA-only sections
+    if (pathname.startsWith("/clients") || pathname.startsWith("/analysis")) {
+      if (user.role !== "BCBA") {
+        return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
+      }
     }
-    if (user.role !== "BCBA") {
-      return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
-    }
+
+    // /collect is allowed for both roles
     return NextResponse.next();
   }
 

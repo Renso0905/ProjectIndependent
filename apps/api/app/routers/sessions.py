@@ -1,5 +1,5 @@
 # apps/api/app/routers/sessions.py
-from datetime import datetime
+from datetime import datetime, date as date_cls
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +11,24 @@ from ..deps import require_user
 
 router = APIRouter()
 
+def _parse_started_at(payload: Dict[str, Any]) -> datetime:
+    # Priority: started_at (ISO) > date (YYYY-MM-DD) > now()
+    started_at_str = payload.get("started_at")
+    if isinstance(started_at_str, str) and started_at_str:
+        try:
+            return datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    date_str = payload.get("date")
+    if isinstance(date_str, str) and date_str:
+        try:
+            d = date_cls.fromisoformat(date_str)
+            # store at midnight local (simple; good enough for now)
+            return datetime(d.year, d.month, d.day, 0, 0, 0)
+        except Exception:
+            pass
+    return datetime.utcnow()
+
 @router.post("/sessions/start")
 def start_session(payload: Dict[str, Any], db: Session = Depends(get_db), _user=Depends(require_user)):
     client_id = payload.get("client_id")
@@ -19,14 +37,21 @@ def start_session(payload: Dict[str, Any], db: Session = Depends(get_db), _user=
     c = db.query(Client).filter(Client.id == client_id).first()
     if not c:
         raise HTTPException(404, detail="Client not found")
-    s = BehaviorSession(client_id=client_id)
+
+    started_at = _parse_started_at(payload)
+    s = BehaviorSession(client_id=client_id, started_at=started_at)
     db.add(s)
     db.commit()
     db.refresh(s)
     return s.as_dict()
 
 @router.post("/sessions/{session_id}/events")
-def add_events(session_id: int, payload: Dict[str, Any], db: Session = Depends(get_db), _user=Depends(require_user)):
+def add_events(
+    session_id: int,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    _user=Depends(require_user)
+):
     s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
     if not s:
         raise HTTPException(404, detail="Session not found")
@@ -73,12 +98,16 @@ def add_events(session_id: int, payload: Dict[str, Any], db: Session = Depends(g
     return {"ok": True, "created": created}
 
 @router.post("/sessions/{session_id}/end")
-def end_session(session_id: int, payload: Optional[Dict[str, Any]] = None, db: Session = Depends(get_db), _user=Depends(require_user)):
+def end_session(
+    session_id: int,
+    payload: Optional[Dict[str, Any]] = None,
+    db: Session = Depends(get_db),
+    _user=Depends(require_user),
+):
     s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
     if not s:
         raise HTTPException(404, detail="Session not found")
 
-    # Optional final events
     if payload and isinstance(payload.get("events"), list):
         add_events(session_id, {"events": payload["events"]}, db, _user)
 

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
@@ -26,11 +26,19 @@ type OutgoingEvent = {
   extra?: any;
 };
 
+function todayStr() {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 export default function CollectPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const [clientId, setClientId] = useState<number | null>(null);
   const [behaviors, setBehaviors] = useState<Behavior[] | null>(null);
+
+  const [sessionDate, setSessionDate] = useState<string>(todayStr());
   const [sessionId, setSessionId] = useState<number | null>(null);
 
   const [unsent, setUnsent] = useState<OutgoingEvent[]>([]);
@@ -55,16 +63,13 @@ export default function CollectPage() {
       .catch(() => setClients([]));
   }, []);
 
-  // When a client is selected: fetch behaviors and start a session
+  // When a client is selected: fetch behaviors (but DON'T start a session automatically)
   useEffect(() => {
-    if (!clientId) return;
+    if (!clientId) {
+      setBehaviors(null);
+      return;
+    }
     setBehaviors(null);
-    setSessionId(null);
-    setUnsent([]);
-    counts.current.clear();
-    runningStart.current.clear();
-    durations.current.clear();
-
     fetch(`${API_BASE}/collect/clients/${clientId}/behaviors`, {
       credentials: "include",
     })
@@ -72,17 +77,12 @@ export default function CollectPage() {
       .then(setBehaviors)
       .catch(() => setBehaviors([]));
 
-    fetch(`${API_BASE}/sessions/start`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: clientId }),
-    })
-      .then((r) => (r.ok ? r.json() : r.json().then((d) => Promise.reject(d))))
-      .then((json) => setSessionId(json.id))
-      .catch((e) => {
-        alert(`Failed to start session: ${e?.detail || "unknown error"}`);
-      });
+    // reset any prior state
+    setSessionId(null);
+    setUnsent([]);
+    counts.current.clear();
+    runningStart.current.clear();
+    durations.current.clear();
   }, [clientId]);
 
   // Autosave every minute
@@ -121,27 +121,54 @@ export default function CollectPage() {
     }
   }
 
-  // Behavior actions
+  async function startSession() {
+    if (!clientId) {
+      alert("Select a client first.");
+      return;
+    }
+    if (!sessionDate) {
+      alert("Pick a date for the session.");
+      return;
+    }
+    try {
+      const r = await fetch(`${API_BASE}/sessions/start`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: clientId, date: sessionDate }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const json = await r.json();
+      setSessionId(json.id);
+    } catch (e) {
+      alert("Failed to start session.");
+    }
+  }
+
+  // Behavior actions (disabled until sessionId exists)
   function inc(behavior_id: number) {
+    if (!sessionId) return;
     const c = counts.current.get(behavior_id) ?? 0;
     counts.current.set(behavior_id, c + 1);
     queue({ behavior_id, event_type: "INC", value: 1, happened_at: nowISO() });
     forceRender();
   }
   function dec(behavior_id: number) {
+    if (!sessionId) return;
     const c = counts.current.get(behavior_id) ?? 0;
     counts.current.set(behavior_id, Math.max(0, c - 1));
     queue({ behavior_id, event_type: "DEC", value: -1, happened_at: nowISO() });
     forceRender();
   }
-
   function startTimer(behavior_id: number) {
-    if (runningStart.current.has(behavior_id)) return; // already running
+    if (!sessionId) return;
+    if (runningStart.current.has(behavior_id)) return;
     runningStart.current.set(behavior_id, Date.now());
     queue({ behavior_id, event_type: "START", happened_at: nowISO() });
     forceRender();
   }
   function stopTimer(behavior_id: number) {
+    if (!sessionId) return;
     const startMs = runningStart.current.get(behavior_id);
     if (!startMs) return;
     const elapsedSec = Math.max(1, Math.round((Date.now() - startMs) / 1000));
@@ -156,16 +183,14 @@ export default function CollectPage() {
     });
     forceRender();
   }
-
   function hit(behavior_id: number) {
-    // For INTERVAL or MTS – a single occurrence within/at the sample
+    if (!sessionId) return;
     const c = counts.current.get(behavior_id) ?? 0;
     counts.current.set(behavior_id, c + 1);
     queue({ behavior_id, event_type: "HIT", value: 1, happened_at: nowISO() });
     forceRender();
   }
 
-  // simple way to reflect ref changes
   const [, setTick] = useState(0);
   function forceRender() {
     setTick((t) => t + 1);
@@ -176,15 +201,15 @@ export default function CollectPage() {
   }
 
   async function onSaveAndExit() {
-    // Auto-stop any running timers (best-effort)
+    // Auto-stop any running timers
     behaviors?.forEach((b) => {
       if (b.method === "DURATION" && runningStart.current.has(b.id)) {
         stopTimer(b.id);
       }
     });
 
-    // Flush remaining events and end session
     try {
+      // Flush remaining events and end session
       if (sessionId && unsent.length > 0) {
         await fetch(`${API_BASE}/sessions/${sessionId}/events`, {
           method: "POST",
@@ -202,7 +227,6 @@ export default function CollectPage() {
           body: JSON.stringify({}),
         });
       }
-      // Back to correct dashboard
       const role = me?.role?.toLowerCase() || "rbt";
       window.location.href = `/dashboard/${role}`;
     } catch (e) {
@@ -221,12 +245,12 @@ export default function CollectPage() {
         </div>
       </header>
 
-      {/* Client picker */}
-      <section className="border rounded-xl p-4 space-y-3">
-        <label className="block">
-          <span className="text-sm">Select Client</span>
+      {/* Client & Date picker */}
+      <section className="grid md:grid-cols-2 gap-4">
+        <div className="border rounded-xl p-4 space-y-2">
+          <label className="block text-sm">Select Client</label>
           <select
-            className="w-full border rounded px-3 py-2 mt-1"
+            className="w-full border rounded px-3 py-2"
             value={clientId ?? ""}
             onChange={(e) =>
               setClientId(e.target.value ? Number(e.target.value) : null)
@@ -239,8 +263,37 @@ export default function CollectPage() {
               </option>
             ))}
           </select>
-        </label>
-        {clientId && !behaviors && <p>Loading behaviors…</p>}
+        </div>
+        <div className="border rounded-xl p-4 space-y-2">
+          <label className="block text-sm">Session Date</label>
+          <input
+            type="date"
+            className="w-full border rounded px-3 py-2"
+            value={sessionDate}
+            onChange={(e) => setSessionDate(e.target.value)}
+            disabled={!clientId || !!sessionId}
+          />
+        </div>
+      </section>
+
+      {/* Start session */}
+      <section className="border rounded-xl p-4 flex items-center gap-3">
+        <button
+          className="px-4 py-2 border rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          onClick={startSession}
+          disabled={!clientId || !sessionDate || !!sessionId}
+        >
+          ▶ Start Session
+        </button>
+        {sessionId ? (
+          <span className="text-sm text-green-700">
+            Session #{sessionId} started for {sessionDate}
+          </span>
+        ) : (
+          <span className="text-sm text-gray-600">
+            Pick client & date, then start.
+          </span>
+        )}
       </section>
 
       {/* Behavior controls */}
@@ -260,12 +313,12 @@ export default function CollectPage() {
                 </div>
               </div>
 
-              {/* Controls by method */}
               {b.method === "FREQUENCY" && (
                 <div className="flex items-center gap-2">
                   <button
                     className="px-3 py-2 border rounded-lg"
                     onClick={() => dec(b.id)}
+                    disabled={!sessionId}
                   >
                     −
                   </button>
@@ -275,6 +328,7 @@ export default function CollectPage() {
                   <button
                     className="px-3 py-2 border rounded-lg"
                     onClick={() => inc(b.id)}
+                    disabled={!sessionId}
                   >
                     +
                   </button>
@@ -287,6 +341,7 @@ export default function CollectPage() {
                     <button
                       className="px-3 py-2 border rounded-lg"
                       onClick={() => startTimer(b.id)}
+                      disabled={!sessionId}
                     >
                       Start
                     </button>
@@ -312,6 +367,7 @@ export default function CollectPage() {
                   <button
                     className="px-3 py-2 border rounded-lg"
                     onClick={() => hit(b.id)}
+                    disabled={!sessionId}
                   >
                     Mark Occurred
                   </button>
@@ -331,7 +387,7 @@ export default function CollectPage() {
           <button
             disabled={!sessionId}
             onClick={onEndSession}
-            className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+            className="px-4 py-2 border rounded-lg hover:bg-gray-50 disabled:opacity-50"
           >
             End Session
           </button>
