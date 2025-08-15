@@ -1,16 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { api } from "../../../lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
-
-type Client = {
-  id: number;
-  name: string;
-  birthdate: string;
-  info?: string | null;
-};
-
+type Client = { id: number; name: string; birthdate: string; info?: string | null };
 type Behavior = {
   id: number;
   client_id: number;
@@ -20,6 +13,15 @@ type Behavior = {
   settings: Record<string, any>;
   created_at: string;
 };
+type Skill = {
+  id: number;
+  client_id: number;
+  name: string;
+  description?: string | null;
+  method: "PERCENTAGE";
+  skill_type: string; // NEW
+  created_at: string;
+};
 
 export default function ClientDashboardPage() {
   const params = useParams<{ id: string }>();
@@ -27,20 +29,26 @@ export default function ClientDashboardPage() {
 
   const [client, setClient] = useState<Client | null>(null);
   const [behaviors, setBehaviors] = useState<Behavior[] | null>(null);
+  const [skills, setSkills] = useState<Skill[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
 
-    fetch(`${API_BASE}/clients/${id}`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : r.json().then((d) => Promise.reject(d))))
+    api.clients
+      .get(Number(id))
       .then(setClient)
-      .catch((e) => setErr(e?.detail || "Failed to load client"));
+      .catch((e) => setErr(e?.message || "Failed to load client"));
 
-    fetch(`${API_BASE}/clients/${id}/behaviors`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : r.json().then((d) => Promise.reject(d))))
+    api.clients
+      .behaviors(Number(id))
       .then(setBehaviors)
-      .catch((e) => console.warn("behaviors load failed:", e));
+      .catch(() => setBehaviors([]));
+
+    api.clients
+      .skills(Number(id))
+      .then(setSkills)
+      .catch(() => setSkills([]));
   }, [id]);
 
   return (
@@ -50,12 +58,14 @@ export default function ClientDashboardPage() {
           ← Back to Clients
         </a>
         {id && (
-          <a
-            href={`/clients/${id}/behaviors/new`}
-            className="px-3 py-2 border rounded-lg hover:bg-gray-50"
-          >
-            + Add Behavior
-          </a>
+          <div className="flex items-center gap-2">
+            <a href={`/clients/${id}/behaviors/new`} className="px-3 py-2 border rounded-lg hover:bg-gray-50">
+              + Add Behavior
+            </a>
+            <a href={`/clients/${id}/skills/new`} className="px-3 py-2 border rounded-lg hover:bg-gray-50">
+              + Add Skill
+            </a>
+          </div>
         )}
       </div>
 
@@ -71,24 +81,34 @@ export default function ClientDashboardPage() {
           <section className="mt-6 p-4 border rounded-xl">
             <h2 className="text-lg font-semibold mb-2">Behaviors</h2>
             {!behaviors && <p>Loading behaviors…</p>}
-            {behaviors && behaviors.length === 0 && (
-              <p className="text-gray-600">No behaviors yet.</p>
-            )}
+            {behaviors && behaviors.length === 0 && <p className="text-gray-600">No behaviors yet.</p>}
             {behaviors && behaviors.length > 0 && (
               <ul className="divide-y">
                 {behaviors.map((b) => (
                   <li key={b.id} className="py-3">
                     <div className="font-medium">{b.name}</div>
                     <div className="text-sm text-gray-600">
-                      Method: {b.method}
-                      {"  "}
-                      {b.settings?.interval_seconds
-                        ? `(interval: ${b.settings.interval_seconds}s)`
-                        : null}
+                      Method: {b.method}{" "}
+                      {b.settings?.interval_seconds ? `(interval: ${b.settings.interval_seconds}s)` : null}
                     </div>
-                    {b.description && (
-                      <div className="text-sm text-gray-700">{b.description}</div>
-                    )}
+                    {b.description && <div className="text-sm text-gray-700">{b.description}</div>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="mt-6 p-4 border rounded-xl">
+            <h2 className="text-lg font-semibold mb-2">Skills</h2>
+            {!skills && <p>Loading skills…</p>}
+            {skills && skills.length === 0 && <p className="text-gray-600">No skills yet.</p>}
+            {skills && skills.length > 0 && (
+              <ul className="divide-y">
+                {skills.map((s) => (
+                  <li key={s.id} className="py-3">
+                    <div className="font-medium">{s.skill_type} - {s.name}</div>
+                    <div className="text-sm text-gray-600">Method: {s.method}</div>
+                    {s.description && <div className="text-sm text-gray-700">{s.description}</div>}
                   </li>
                 ))}
               </ul>

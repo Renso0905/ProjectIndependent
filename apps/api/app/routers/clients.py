@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Client, Behavior, DataCollectionMethod
+from ..models import Client, Behavior, DataCollectionMethod, Skill, SkillMethod, SkillType
 from ..deps import require_bcba
 
 router = APIRouter()
@@ -40,6 +40,7 @@ def get_client(client_id: int, db: Session = Depends(get_db), _user=Depends(requ
     if not c:
         raise HTTPException(404, detail="Client not found")
     return c.as_dict()
+
 
 # ---- Behaviors (BCBA only) ----
 def _validate_behavior_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -89,3 +90,54 @@ def list_behaviors(client_id: int, db: Session = Depends(get_db), _user=Depends(
         raise HTTPException(404, detail="Client not found")
     items = db.query(Behavior).filter(Behavior.client_id == client_id).order_by(Behavior.created_at.asc()).all()
     return [b.as_dict() for b in items]
+
+
+# ---- NEW: Skills (BCBA only) ----
+def _validate_skill_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    name = (data.get("name") or "").strip()
+    description = data.get("description") or None
+    method_str = (data.get("method") or "PERCENTAGE").upper()
+    # accept either "skill_type" or legacy "type"
+    st_raw = (data.get("skill_type") or data.get("type") or "OTHER").upper()
+
+    if not name:
+        raise HTTPException(400, detail="name is required")
+
+    try:
+        method = SkillMethod[method_str]
+    except KeyError:
+        raise HTTPException(400, detail="Invalid method. Only PERCENTAGE is supported")
+
+    try:
+        skill_type = SkillType[st_raw]
+    except KeyError:
+        raise HTTPException(400, detail="Invalid skill_type code")
+
+    return {"name": name, "description": description, "method": method, "skill_type": skill_type}
+
+@router.post("/clients/{client_id}/skills")
+def create_skill(client_id: int, data: Dict[str, Any], db: Session = Depends(get_db), _user=Depends(require_bcba)):
+    client = db.query(Client).filter(Client.id == client_id).first()
+    if not client:
+        raise HTTPException(404, detail="Client not found")
+
+    payload = _validate_skill_payload(data)
+    s = Skill(
+        client_id=client_id,
+        name=payload["name"],
+        description=payload["description"],
+        method=payload["method"],
+        skill_type=payload["skill_type"],  # NEW
+    )
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s.as_dict()
+
+@router.get("/clients/{client_id}/skills")
+def list_skills(client_id: int, db: Session = Depends(get_db), _user=Depends(require_bcba)):
+    c = db.query(Client).filter(Client.id == client_id).first()
+    if not c:
+        raise HTTPException(404, detail="Client not found")
+    items = db.query(Skill).filter(Skill.client_id == client_id).order_by(Skill.created_at.asc()).all()
+    return [s.as_dict() for s in items]

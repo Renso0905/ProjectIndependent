@@ -1,92 +1,121 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
 } from "recharts";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
+import { api } from "../../lib/api";
 
 type Client = { id: number; name: string; birthdate: string };
-type Behavior = { id: number; client_id: number; name: string; method: "FREQUENCY"|"DURATION"|"MTS"|"INTERVAL"; settings: any };
-type Point = { date: string; value: number; session_count?: number };
+
+// Behaviors
+type Behavior = {
+  id: number;
+  client_id: number;
+  name: string;
+  method: "FREQUENCY" | "DURATION" | "MTS" | "INTERVAL";
+  settings: any;
+};
 type BehaviorMeta = { id: number; name: string; method: string };
+
+// Skills (with skill_type)
+type Skill = { id: number; client_id: number; name: string; method: "PERCENTAGE"; skill_type: string };
+type SkillMeta = { id: number; name: string; method: string; skill_type?: string };
+
+type Point = { date: string; value: number; session_count?: number };
 
 export default function AnalysisPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [clientId, setClientId] = useState<number | "">("");
+
   const [behaviors, setBehaviors] = useState<Behavior[]>([]);
   const [behaviorId, setBehaviorId] = useState<number | "">("");
-  const [points, setPoints] = useState<Point[]>([]);
   const [behaviorMeta, setBehaviorMeta] = useState<BehaviorMeta | null>(null);
+
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [skillId, setSkillId] = useState<number | "">("");
+  const [skillMeta, setSkillMeta] = useState<SkillMeta | null>(null);
+
+  const [points, setPoints] = useState<Point[]>([]);
   const [loading, setLoading] = useState(false);
-  const [debug, setDebug] = useState<any>(null); // optional: raw payload
+  const [debug, setDebug] = useState<any>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/collect/clients`, { credentials: "include" })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(setClients)
-      .catch(() => setClients([]));
+    api.clients.list().then(setClients).catch(() => setClients([]));
   }, []);
 
   useEffect(() => {
-    setBehaviors([]);
-    setBehaviorId("");
-    setPoints([]);
-    setBehaviorMeta(null);
+    setBehaviors([]); setBehaviorId(""); setBehaviorMeta(null);
+    setSkills([]); setSkillId(""); setSkillMeta(null);
+    setPoints([]); setDebug(null);
     if (!clientId) return;
 
-    fetch(`${API_BASE}/collect/clients/${clientId}/behaviors`, { credentials: "include" })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(setBehaviors)
-      .catch(() => setBehaviors([]));
+    api.clients.behaviors(Number(clientId)).then(setBehaviors).catch(() => setBehaviors([]));
+    api.clients.skills(Number(clientId)).then(setSkills).catch(() => setSkills([]));
   }, [clientId]);
 
   useEffect(() => {
-    setPoints([]);
-    setBehaviorMeta(null);
-    setDebug(null);
-    if (!behaviorId) return;
-    setLoading(true);
-    fetch(`${API_BASE}/analysis/behavior/${behaviorId}/session-points`, { credentials: "include" })
-      .then(async (r) => {
-        if (!r.ok) {
-          const txt = await r.text();
-          throw new Error(`Analysis ${r.status}: ${txt}`);
+    setPoints([]); setDebug(null); setBehaviorMeta(null); setSkillMeta(null);
+
+    async function go() {
+      if (behaviorId) {
+        setLoading(true);
+        try {
+          const data = await api.analysis.behavior(Number(behaviorId));
+          setDebug(data);
+          setBehaviorMeta(data.behavior);
+          const ps = (data.points || []).sort((a: Point, b: Point) => a.date.localeCompare(b.date));
+          setPoints(ps);
+        } finally {
+          setLoading(false);
         }
-        return r.json();
-      })
-      .then((data) => {
-        setDebug(data);
-        setBehaviorMeta(data.behavior);
-        const ps: Point[] = (data.points || []).sort((a: Point, b: Point) =>
-          a.date.localeCompare(b.date)
-        );
-        setPoints(ps);
-      })
-      .catch((e) => console.warn(e))
-      .finally(() => setLoading(false));
-  }, [behaviorId]);
+        return;
+      }
 
-  // Y domain that still shows a dot/line if all values are 0 or there is only one point
+      if (skillId) {
+        setLoading(true);
+        try {
+          const data = await api.analysis.skill(Number(skillId));
+          setDebug(data);
+          setSkillMeta(data.skill);
+          const ps = (data.points || []).sort((a: Point, b: Point) => a.date.localeCompare(b.date));
+          setPoints(ps);
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+    }
+
+    go();
+  }, [behaviorId, skillId]);
+
+  const isSkill = !!skillMeta;
   const yDomain = useMemo<[number, number]>(() => {
+    if (isSkill) return [0, 100];
     if (!points || points.length === 0) return [0, 1];
-    const max = Math.max(...points.map(p => p.value ?? 0));
+    const max = Math.max(...points.map((p) => p.value ?? 0));
     return [0, max === 0 ? 1 : Math.ceil(max * 1.1)];
-  }, [points]);
+  }, [points, isSkill]);
 
-  const yLabel =
-    behaviorMeta?.method === "DURATION"
-      ? "Seconds (per date)"
-      : behaviorMeta?.method === "FREQUENCY"
-      ? "Count (per date)"
-      : "Hits (per date)";
+  const yLabel = isSkill
+    ? "Percent correct (%)"
+    : behaviorMeta?.method === "DURATION"
+    ? "Seconds (per date)"
+    : behaviorMeta?.method === "FREQUENCY"
+    ? "Count (per date)"
+    : "Hits (per date)";
 
-  // colors for dark bg
-  const axisStroke = "#e5e7eb";   // gray-200
+  const axisStroke = "#e5e7eb";
   const axisTick = "#e5e7eb";
-  const gridStroke = "#374151";   // gray-700
-  const lineStroke = "#60a5fa";   // blue-400
-  const tooltipBg = "#111827";    // gray-900
+  const gridStroke = "#374151";
+  const lineStroke = "#60a5fa";
+  const tooltipBg = "#111827";
   const tooltipBorder = "#374151";
   const tooltipText = "#e5e7eb";
 
@@ -97,34 +126,60 @@ export default function AnalysisPage() {
         <a className="text-sm underline" href="/dashboard/bcba">← Back to BCBA Dashboard</a>
       </header>
 
-      <section className="grid md:grid-cols-2 gap-4">
+      <section className="grid md:grid-cols-3 gap-4">
         <div className="border rounded-xl p-4 space-y-2">
           <label className="text-sm">Client</label>
           <select
             className="w-full border rounded px-3 py-2 bg-transparent"
             value={clientId}
-            onChange={e => setClientId(e.target.value ? Number(e.target.value) : "")}
+            onChange={(e) => setClientId(e.target.value ? Number(e.target.value) : "")}
           >
             <option value="">-- choose client --</option>
-            {clients.map(c => (
+            {clients.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name} (DOB {c.birthdate})
               </option>
             ))}
           </select>
         </div>
+
         <div className="border rounded-xl p-4 space-y-2">
           <label className="text-sm">Behavior</label>
           <select
             className="w-full border rounded px-3 py-2 bg-transparent"
             value={behaviorId}
-            onChange={e => setBehaviorId(e.target.value ? Number(e.target.value) : "")}
+            onChange={(e) => {
+              const v = e.target.value ? Number(e.target.value) : "";
+              setBehaviorId(v);
+              if (v !== "") setSkillId("");
+            }}
             disabled={!clientId}
           >
             <option value="">-- choose behavior --</option>
-            {behaviors.map(b => (
+            {behaviors.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name} · {b.method}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="border rounded-xl p-4 space-y-2">
+          <label className="text-sm">Skill</label>
+          <select
+            className="w-full border rounded px-3 py-2 bg-transparent"
+            value={skillId}
+            onChange={(e) => {
+              const v = e.target.value ? Number(e.target.value) : "";
+              setSkillId(v);
+              if (v !== "") setBehaviorId("");
+            }}
+            disabled={!clientId}
+          >
+            <option value="">-- choose skill --</option>
+            {skills.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.skill_type} - {s.name} · {s.method}
               </option>
             ))}
           </select>
@@ -134,18 +189,20 @@ export default function AnalysisPage() {
       <section className="border rounded-xl p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="font-semibold">
-            {behaviorMeta ? `${behaviorMeta.name} — ${behaviorMeta.method}` : "Select a behavior"}
+            {behaviorMeta
+              ? `${behaviorMeta.name} — ${behaviorMeta.method}`
+              : skillMeta
+              ? `${skillMeta.skill_type ?? ""}${skillMeta.skill_type ? " - " : ""}${skillMeta.name} — ${skillMeta.method}`
+              : "Select a behavior or skill"}
           </div>
           <div className="text-sm text-gray-400">{loading ? "Loading…" : null}</div>
         </div>
 
-        {/* Helpful message if no points */}
-        {behaviorMeta && points.length === 0 && !loading && (
-          <p className="text-gray-400 text-sm">No data yet for this behavior.</p>
+        {(behaviorMeta || skillMeta) && points.length === 0 && !loading && (
+          <p className="text-gray-400 text-sm">No data yet for this selection.</p>
         )}
 
-        {/* Chart */}
-        <div className="h-80 w-full">
+        <div style={{ width: "100%", height: 320 }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={points} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
               <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
@@ -166,7 +223,6 @@ export default function AnalysisPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Optional debug (only useful during dev) */}
         {process.env.NODE_ENV !== "production" && debug && (
           <details className="mt-2">
             <summary className="cursor-pointer text-sm text-gray-400">Debug payload</summary>

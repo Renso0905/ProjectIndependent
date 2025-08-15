@@ -1,18 +1,17 @@
 # apps/api/app/routers/sessions.py
 from datetime import datetime, date as date_cls
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import BehaviorSession, BehaviorEvent, Behavior, Client
+from ..models import BehaviorSession, BehaviorEvent, Behavior, Client, Skill, SkillEvent
 from ..deps import require_user
 
 router = APIRouter()
 
 def _parse_started_at(payload: Dict[str, Any]) -> datetime:
-    # Priority: started_at (ISO) > date (YYYY-MM-DD) > now()
     started_at_str = payload.get("started_at")
     if isinstance(started_at_str, str) and started_at_str:
         try:
@@ -23,7 +22,6 @@ def _parse_started_at(payload: Dict[str, Any]) -> datetime:
     if isinstance(date_str, str) and date_str:
         try:
             d = date_cls.fromisoformat(date_str)
-            # store at midnight local (simple; good enough for now)
             return datetime(d.year, d.month, d.day, 0, 0, 0)
         except Exception:
             pass
@@ -92,6 +90,55 @@ def add_events(
             extra=extra,
         )
         db.add(ev)
+        created += 1
+
+    db.commit()
+    return {"ok": True, "created": created}
+
+# NEW: skill events (CORRECT/WRONG)
+@router.post("/sessions/{session_id}/skill-events")
+def add_skill_events(
+    session_id: int,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    _user=Depends(require_user),
+):
+    s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, detail="Session not found")
+
+    events: List[Dict[str, Any]] = payload.get("events") or []
+    if not isinstance(events, list):
+        raise HTTPException(400, detail="events must be a list")
+
+    created = 0
+    for e in events:
+        skill_id = e.get("skill_id")
+        event_type = (e.get("event_type") or "").upper()  # CORRECT / WRONG
+        happened_at_str = e.get("happened_at")
+
+        if not isinstance(skill_id, int) or event_type not in {"CORRECT", "WRONG"}:
+            continue
+
+        skill = db.query(Skill).filter(Skill.id == skill_id).first()
+        if not skill or skill.client_id != s.client_id:
+            continue
+
+        if happened_at_str:
+            try:
+                happened_at = datetime.fromisoformat(happened_at_str.replace("Z", "+00:00"))
+            except Exception:
+                happened_at = datetime.utcnow()
+        else:
+            happened_at = datetime.utcnow()
+
+        sev = SkillEvent(
+            session_id=s.id,
+            skill_id=skill_id,
+            event_type=event_type,
+            happened_at=happened_at,
+        )
+        db.add(sev)
         created += 1
 
     db.commit()

@@ -1,61 +1,27 @@
 "use client";
-
 import { useEffect, useState } from "react";
+import { api } from "../lib/api";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
+type Health = { ok: boolean; version?: string };
 
-export default function HomePage() {
-  const [apiStatus, setApiStatus] = useState<string>("checking...");
+export default function Home() {
+  const [health, setHealth] = useState<Health | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/health`, { cache: "no-store" })
-      .then((res) => res.json())
-      .then((json) =>
-        setApiStatus(`API: ${json.status} (v${json.version})`),
-      )
-      .catch(() => setApiStatus("API: unreachable"));
+    api.health().then(setHealth).catch(() => setHealth({ ok: false }));
   }, []);
 
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto", padding: 24 }}>
-      <h1 style={{ marginBottom: 8 }}>Project Independent</h1>
-      <p>This is the Next.js frontend for Project Independent (Phase A).</p>
-
-      <div
-        style={{
-          marginTop: 16,
-          padding: 16,
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          background: "#fafafa",
-        }}
-      >
-        <strong>Backend status:</strong>
-        <div>{apiStatus}</div>
-        <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-          Using: <code>{API_BASE}</code>
-        </div>
+    <main className="min-h-screen p-8">
+      <h1 className="text-3xl font-bold mb-4">Project Independent</h1>
+      <p className="text-sm text-gray-600 mb-6">
+        API status:{" "}
+        {health ? (health.ok ? `OK${health.version ? ` (v${health.version})` : ""}` : "offline") : "checking…"}
+      </p>
+      <div className="flex gap-3">
+        <a href="/login/bcba" className="px-3 py-2 border rounded-lg hover:bg-gray-50">BCBA Login</a>
+        <a href="/login/rbt" className="px-3 py-2 border rounded-lg hover:bg-gray-50">RBT Login</a>
       </div>
-
-      <div style={{ marginTop: 24, display: "grid", gap: 12 }}>
-        <a href="/login/bcba" style={linkStyle}>
-          BCBA Login
-        </a>
-        <a href="/login/rbt" style={linkStyle}>
-          RBT Login
-        </a>
-      </div>
-    </div>
+    </main>
   );
 }
-
-const linkStyle: React.CSSProperties = {
-  display: "inline-block",
-  padding: "12px 16px",
-  background: "#0b5cff",
-  color: "white",
-  textDecoration: "none",
-  borderRadius: 8,
-  width: "fit-content",
-};
