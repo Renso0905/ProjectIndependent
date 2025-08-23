@@ -1,17 +1,38 @@
 // apps/web/lib/api.ts
 
+// 🚦 Single source of truth for ALL HTTP calls.
+// Do NOT call `fetch()` or reference `NEXT_PUBLIC_API_BASE` anywhere outside this file.
+// Pages/components must import and use `api.<method>()` only.
+
+import type {
+  Me,
+  Client,
+  Behavior,
+  Skill,
+  Session,
+  BehaviorEventOut,
+  SkillEventOut,
+  BehaviorAnalysis,
+  SkillAnalysis,
+} from "./types";
+
+// Re-export shared types so pages can import from either "lib/types" or "lib/api"
+export * from "./types";
+
 // ---- Base URL ----
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
 
 // ---- Session helpers (used by apiFetch + login/logout) ----
-function getSessionHeaders() {
+function getSessionHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
   const uid = localStorage.getItem("uid");
   const uname = localStorage.getItem("uname");
   const h: Record<string, string> = {};
   if (uid) {
     h["X-User-Id"] = uid;
-    h["Authorization"] = `Bearer ${uid}`;   // <-- add bearer fallback
+    // Bearer fallback for dev-friendly header auth (API also reads cookies)
+    h["Authorization"] = `Bearer ${uid}`;
   }
   if (uname) h["X-Username"] = uname;
   return h;
@@ -22,6 +43,7 @@ function setSessionUser(id?: number, username?: string) {
   if (id != null) localStorage.setItem("uid", String(id));
   if (username) localStorage.setItem("uname", username);
 }
+
 function clearSessionUser() {
   if (typeof window === "undefined") return;
   localStorage.removeItem("uid");
@@ -29,9 +51,9 @@ function clearSessionUser() {
 }
 
 // ---- Fetch wrapper ----
-type ApiError = { status: number; message: string };
+export type ApiError = { status: number; message: string };
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
     headers: {
@@ -48,84 +70,23 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
         try {
           return JSON.parse(text);
         } catch {
-          return text as any;
+          return text as unknown;
         }
       })()
     : null;
 
   if (!res.ok) {
     const message =
-      (data && (data.detail || data.error || data.message)) || `HTTP ${res.status}`;
+      (data && (data as any).detail) ||
+      (data && (data as any).error) ||
+      (data && (data as any).message) ||
+      `HTTP ${res.status}`;
     const err: ApiError = { status: res.status, message };
     throw err;
   }
+
   return data as T;
 }
-
-// ---- Shared types (match backend) ----
-export type Me = { username: string; role: "BCBA" | "RBT" };
-
-export type Client = {
-  id: number;
-  name: string;
-  birthdate: string;
-  info?: string | null;
-};
-
-export type Method = "FREQUENCY" | "DURATION" | "INTERVAL" | "MTS";
-
-export type Behavior = {
-  id: number;
-  client_id: number;
-  name: string;
-  description?: string | null;
-  method: Method;
-  settings: any;
-  created_at: string;
-};
-
-export type Skill = {
-  id: number;
-  client_id: number;
-  name: string;
-  description?: string | null;
-  method: "PERCENTAGE";
-  skill_type: string; // e.g., "LR", "MAND", ...
-  created_at: string;
-};
-
-export type Session = {
-  id: number;
-  client_id: number;
-  started_at: string;
-  ended_at: string | null;
-};
-
-export type BehaviorEventOut = {
-  behavior_id: number;
-  event_type: "INC" | "DEC" | "START" | "STOP" | "HIT";
-  value?: number | null;
-  happened_at?: string;
-  extra?: any;
-};
-
-export type SkillEventOut = {
-  skill_id: number;
-  event_type: "CORRECT" | "WRONG";
-  happened_at?: string;
-};
-
-export type AnalysisPoint = { date: string; value: number; session_count?: number };
-
-export type BehaviorAnalysis = {
-  behavior: { id: number; name: string; method: string };
-  points: AnalysisPoint[];
-};
-
-export type SkillAnalysis = {
-  skill: { id: number; name: string; method: string; skill_type?: string };
-  points: AnalysisPoint[];
-};
 
 // ---- API surface ----
 export const api = {
@@ -150,7 +111,10 @@ export const api = {
   },
 
   logout: async () => {
-    await apiFetch<{ ok: boolean }>("/auth/logout", { method: "POST", body: "{}" });
+    await apiFetch<{ ok: boolean }>("/auth/logout", {
+      method: "POST",
+      body: "{}",
+    });
     clearSessionUser();
   },
 
@@ -162,7 +126,8 @@ export const api = {
     behaviors: (id: number) =>
       apiFetch<Behavior[]>(`/collect/clients/${id}/behaviors`),
 
-    skills: (id: number) => apiFetch<Skill[]>(`/collect/clients/${id}/skills`),
+    skills: (id: number) =>
+      apiFetch<Skill[]>(`/collect/clients/${id}/skills`),
 
     create: (payload: { name: string; birthdate: string; info?: string | null }) =>
       apiFetch<Client>("/clients", {
@@ -175,8 +140,8 @@ export const api = {
       payload: {
         name: string;
         description?: string | null;
-        method: Method;
-        settings?: any;
+        method: Behavior["method"];
+        settings?: Record<string, unknown>;
       }
     ) =>
       apiFetch<Behavior>(`/clients/${clientId}/behaviors`, {
@@ -189,13 +154,17 @@ export const api = {
       payload: {
         name: string;
         description?: string | null;
-        method?: "PERCENTAGE";
-        skill_type?: string; // defaulted on server to OTHER if missing
+        method?: Skill["method"]; // defaults to PERCENTAGE on server
+        skill_type?: Skill["skill_type"]; // defaults to OTHER on server
       }
     ) =>
       apiFetch<Skill>(`/clients/${clientId}/skills`, {
         method: "POST",
-        body: JSON.stringify({ method: "PERCENTAGE", skill_type: "OTHER", ...payload }),
+        body: JSON.stringify({
+          method: "PERCENTAGE",
+          skill_type: "OTHER",
+          ...payload,
+        }),
       }),
   },
 
@@ -220,17 +189,19 @@ export const api = {
       }),
 
     postSkillEvents: (id: number, events: SkillEventOut[]) =>
-      apiFetch<{ ok: boolean; created: number }>(`/sessions/${id}/skill-events`, {
-        method: "POST",
-        body: JSON.stringify({ events }),
-      }),
+      apiFetch<{ ok: boolean; created: number }>(
+        `/sessions/${id}/skill-events`,
+        {
+          method: "POST",
+          body: JSON.stringify({ events }),
+        }
+      ),
   },
 
   // analysis
   analysis: {
     behavior: (behaviorId: number) =>
       apiFetch<BehaviorAnalysis>(`/analysis/behavior/${behaviorId}/session-points`),
-
     skill: (skillId: number) =>
       apiFetch<SkillAnalysis>(`/analysis/skill/${skillId}/session-points`),
   },

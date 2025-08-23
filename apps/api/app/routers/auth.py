@@ -1,58 +1,104 @@
-# apps/api/app/routers/auth.py
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
+import bcrypt
 
-from ..db import get_db
-from ..models import User, Role
-from ..deps import get_current_user
+from ..deps import get_db
+from ..models import User  # expects: id, username, role, hashed_password
 
-router = APIRouter()
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+# -------- Password utilities (bcrypt) --------
+
+def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
+    if not hashed_password:
+        return False
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    except Exception:
+        return False
+
+
+# -------- Schemas --------
 
 class LoginIn(BaseModel):
     username: str
     password: str
-    portal: str  # "BCBA" | "RBT"
+    portal: Optional[str] = None  # "BCBA" | "RBT" (just for redirect convenience)
 
-@router.post("/auth/login")
-def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.username == payload.username).first()
-    if not u:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+class LoginOut(BaseModel):
+    redirect: str
+    user_id: int
+    username: str
+    role: str
 
-    # DEV check (adjust to your real password logic if needed)
-    ok = (payload.password == u.hashed_password) or (payload.password == "1234")
-    if not ok:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+class MeOut(BaseModel):
+    id: int
+    username: str
+    role: str
 
-    # Optional: ensure portal matches role
-    if payload.portal.upper() not in (Role.BCBA.value, Role.RBT.value):
-        raise HTTPException(status_code=400, detail="Invalid portal")
-    if u.role.value != payload.portal.upper():
-        # allow, or enforce — here we enforce
-        raise HTTPException(status_code=403, detail="Wrong portal for this user")
 
-    # --- Set cookies the deps.get_current_user can read ---
-    max_age = 60 * 60 * 24 * 30  # 30 days
-    response.set_cookie("user_id", str(u.id), max_age=max_age, httponly=True, samesite="lax", path="/")
-    response.set_cookie("username", u.username, max_age=max_age, httponly=True, samesite="lax", path="/")
-    response.set_cookie("role", u.role.value, max_age=max_age, httponly=True, samesite="lax", path="/")
+# -------- Helpers --------
 
-    # Also return user info for the frontend to store (header fallback)
+def set_session_cookies(resp: Response, user: User) -> None:
+    """
+    Set session cookies. Role is written in UPPERCASE to align with middleware checks.
+    Keep cookie settings dev-friendly (no Secure on HTTP). #20 will harden later.
+    """
+    role_up = (user.role or "").upper()
+    resp.set_cookie("user_id", str(user.id), httponly=True, samesite="lax", path="/")
+    resp.set_cookie("role", role_up, httponly=False, samesite="lax", path="/")
+    resp.set_cookie("username", user.username, httponly=False, samesite="lax", path="/")
+
+def clear_session_cookies(resp: Response) -> None:
+    resp.delete_cookie("user_id", path="/")
+    resp.delete_cookie("role", path="/")
+    resp.delete_cookie("username", path="/")
+
+
+# -------- Routes --------
+
+@router.post("/login", response_model=LoginOut)
+def login(body: LoginIn, response: Response, db: Session = Depends(get_db)):
+    """
+    Strict password check using bcrypt. (No plaintext/backdoor.)
+    """
+    user = db.query(User).filter(User.username == body.username).one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if not verify_password(body.password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    set_session_cookies(response, user)
+
+    # Redirect to the user's role dashboard; route slugs are lowercase.
+    role_slug = (user.role or "").lower() or "rbt"
+    redirect = f"/dashboard/{role_slug}"
+
     return {
-        "redirect": f"/dashboard/{u.role.value.lower()}",
-        "user_id": u.id,
-        "username": u.username,
-        "role": u.role.value,
+        "redirect": redirect,
+        "user_id": user.id,
+        "username": user.username,
+        "role": (user.role or "").upper(),  # echo uppercase to match cookie/middleware
     }
 
-@router.get("/auth/me")
-def me(user: User = Depends(get_current_user)):
-    return {"id": user.id, "username": user.username, "role": user.role.value}
+@router.get("/me", response_model=MeOut)
+def me(request: Request, db: Session = Depends(get_db)):
+    """
+    Read user from backend cookies (user_id). No header/query auth.
+    """
+    uid = request.cookies.get("user_id")
+    if not uid:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-@router.post("/auth/logout")
+    user = db.query(User).filter(User.id == int(uid)).one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    return {"id": user.id, "username": user.username, "role": (user.role or "").upper()}
+
+@router.post("/logout")
 def logout(response: Response):
-    # clear cookies
-    for k in ("user_id", "username", "role"):
-        response.delete_cookie(k, path="/")
+    clear_session_cookies(response)
     return {"ok": True}

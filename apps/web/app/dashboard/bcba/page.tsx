@@ -1,27 +1,26 @@
 "use client";
 import { useEffect, useState } from "react";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
-
-type Me = { username: string; role: "BCBA" | "RBT" };
+import { api, type Me } from "../../../lib/api";
 
 export default function BCBADashboard() {
   const [me, setMe] = useState<Me | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/auth/me`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setMe)
-      .catch(() => setMe(null));
+    let mounted = true;
+    api.me()
+      .then((u) => mounted && setMe(u as Me))
+      .catch(() => mounted && setMe(null));
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   async function logout() {
-    await fetch(`${API_BASE}/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    });
-    window.location.href = "/login/bcba";
+    try {
+      await api.logout();
+    } finally {
+      window.location.href = "/login/bcba";
+    }
   }
 
   return (
@@ -50,7 +49,7 @@ export default function BCBADashboard() {
             ▶ Start Data Collection
           </a>
           <a href="/analysis" className="px-4 py-2 border rounded-lg hover:bg-gray-50">
-            📈 Data Analysis
+            Data Analysis
           </a>
           <a href="/clients/new" className="px-4 py-2 border rounded-lg hover:bg-gray-50">
             + Create Client

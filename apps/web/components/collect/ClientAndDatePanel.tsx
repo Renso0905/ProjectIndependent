@@ -1,5 +1,6 @@
 "use client";
-type Client = { id: number; name: string; birthdate: string };
+
+import type { Client } from "../../lib/types";
 
 export default function ClientAndDatePanel({
   clients,
@@ -17,13 +18,15 @@ export default function ClientAndDatePanel({
   sessionLocked: boolean;
 }) {
   return (
-    <section className="grid md:grid-cols-2 gap-4">
-      <div className="border rounded-xl p-4 space-y-2">
-        <label className="block text-sm">Select Client</label>
+    <section className="grid gap-3 sm:grid-cols-2">
+      <label className="block">
+        <div className="text-sm mb-1">Client</div>
         <select
           className="w-full border rounded px-3 py-2"
           value={clientId ?? ""}
-          onChange={(e) => setClientId(e.target.value ? Number(e.target.value) : null)}
+          onChange={(e) =>
+            setClientId(e.target.value ? Number(e.target.value) : null)
+          }
           disabled={sessionLocked}
         >
           <option value="">-- choose client --</option>
@@ -33,17 +36,18 @@ export default function ClientAndDatePanel({
             </option>
           ))}
         </select>
-      </div>
-      <div className="border rounded-xl p-4 space-y-2">
-        <label className="block text-sm">Session Date</label>
+      </label>
+
+      <label className="block">
+        <div className="text-sm mb-1">Session Date</div>
         <input
           type="date"
           className="w-full border rounded px-3 py-2"
           value={sessionDate}
           onChange={(e) => setSessionDate(e.target.value)}
-          disabled={!clientId || sessionLocked}
+          disabled={sessionLocked}
         />
-      </div>
+      </label>
     </section>
   );
 }

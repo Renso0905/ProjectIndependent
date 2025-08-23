@@ -1,59 +1,80 @@
+// Single auth source: backend cookies set by the FastAPI server.
+// Route protection + role gating with a small, declarative rule table.
+// Also normalizes cookie role casing to avoid redirect loops.
+
 import { NextRequest, NextResponse } from "next/server";
-import { jwtVerify } from "jose";
 
-const JWT_SECRET = process.env.JWT_SECRET || "change-me";
+type Role = "BCBA" | "RBT" | "ANY";
 
-async function verifyToken(token: string) {
-  try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET));
-    return payload as { sub?: string; role?: "BCBA" | "RBT" };
-  } catch {
-    return null;
-  }
+// Declarative route rules (first matching prefix wins)
+const RULES: Array<{ prefix: string; role: Role }> = [
+  // BCBA-only
+  { prefix: "/dashboard/bcba", role: "BCBA" },
+  { prefix: "/clients", role: "BCBA" },
+  { prefix: "/analysis", role: "BCBA" },
+
+  // RBT-only
+  { prefix: "/dashboard/rbt", role: "RBT" },
+
+  // Shared
+  { prefix: "/collect", role: "ANY" },
+];
+
+function requiredRoleFor(pathname: string): Role | null {
+  for (const r of RULES) if (pathname.startsWith(r.prefix)) return r.role;
+  return null; // public/unspecified
+}
+
+function isPublicPath(pathname: string) {
+  return pathname === "/" || pathname.startsWith("/login");
+}
+
+function pickLoginPath(pathname: string) {
+  // Keep prior behavior: RBT dashboard → /login/rbt; otherwise /login/bcba
+  return pathname.startsWith("/dashboard/rbt") ? "/login/rbt" : "/login/bcba";
+}
+
+function normalizeRole(raw?: string): Exclude<Role, "ANY"> | undefined {
+  const up = (raw || "").toUpperCase();
+  return up === "BCBA" || up === "RBT" ? (up as Exclude<Role, "ANY">) : undefined;
 }
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  const token = req.cookies.get("pi_access_token")?.value || "";
-  const jwtUser = token ? await verifyToken(token) : null;
+  // Public routes
+  if (isPublicPath(pathname)) return NextResponse.next();
 
-  // NEW: fall back to cookies set by the backend today
-  const cookieUid = req.cookies.get("user_id")?.value;
-  const cookieRole = req.cookies.get("role")?.value as "BCBA" | "RBT" | undefined;
-  const cookieUser = cookieUid && cookieRole ? { sub: cookieUid, role: cookieRole } : null;
+  // Auth: backend cookies only (JWT path removed)
+  const uid = req.cookies.get("user_id")?.value;
+  const role = normalizeRole(req.cookies.get("role")?.value);
+  const user = uid && role ? { sub: uid, role } : null;
 
-  const user = jwtUser ?? cookieUser;
+  // Not authenticated → send to login
+  if (!user) {
+    const url = req.nextUrl.clone();
+    url.pathname = pickLoginPath(pathname);
+    url.searchParams.set("next", pathname);
+    return NextResponse.redirect(url);
+  }
 
-  if (pathname === "/" || pathname.startsWith("/login")) {
-    if (user?.role === "BCBA") return NextResponse.redirect(new URL("/dashboard/bcba", req.url));
-    if (user?.role === "RBT")  return NextResponse.redirect(new URL("/dashboard/rbt",  req.url));
+  // Role guard
+  const need = requiredRoleFor(pathname);
+  if (need && need !== "ANY" && user.role !== need) {
+    const target = user.role === "BCBA" ? "/dashboard/bcba" : "/dashboard/rbt";
+    // Prevent self-redirect loops: if already at target, allow through.
+    if (pathname !== target) {
+      const url = req.nextUrl.clone();
+      url.pathname = target;
+      return NextResponse.redirect(url);
+    }
     return NextResponse.next();
   }
 
-  const authRequired =
-    pathname.startsWith("/dashboard") ||
-    pathname.startsWith("/collect") ||
-    pathname.startsWith("/analysis");
-
-  if (authRequired) {
-    if (!user) {
-      const login = pathname.includes("/bcba") ? "/login/bcba"
-                  : pathname.includes("/rbt")  ? "/login/rbt"
-                  : "/login/rbt";
-      return NextResponse.redirect(new URL(login, req.url));
-    }
-    if (pathname.startsWith("/dashboard/bcba") && user.role !== "BCBA") {
-      return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
-    }
-    if (pathname.startsWith("/dashboard/rbt") && user.role !== "RBT") {
-      return NextResponse.redirect(new URL("/dashboard/bcba", req.url));
-    }
-    if ((pathname.startsWith("/clients") || pathname.startsWith("/analysis")) && user.role !== "BCBA") {
-      return NextResponse.redirect(new URL("/dashboard/rbt", req.url));
-    }
-  }
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+// Exclude Next static assets/images and favicon
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};

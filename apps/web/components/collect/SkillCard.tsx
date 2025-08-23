@@ -1,14 +1,6 @@
 "use client";
 
-type Skill = {
-  id: number;
-  client_id: number;
-  name: string;
-  description?: string | null;
-  method: "PERCENTAGE";
-  skill_type: string; // NEW
-  created_at: string;
-};
+import type { Skill } from "../../lib/types";
 
 export default function SkillCard({
   s,
@@ -23,24 +15,34 @@ export default function SkillCard({
   onCorrect: (id: number) => void;
   onWrong: (id: number) => void;
 }) {
-  return (
-    <article className="border rounded-xl p-4 space-y-2">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="font-semibold">{s.skill_type} - {s.name}</div>
-          <div className="text-xs text-gray-600">Method: {s.method}</div>
-        </div>
-        <div className="text-sm font-mono">
-          % Correct: <span className="font-semibold">{percent}</span>
-        </div>
-      </div>
+  const canAct = !!sessionId;
 
-      <div className="flex items-center gap-2">
-        <button className="px-3 py-2 border rounded-lg" onClick={() => onWrong(s.id)} disabled={!sessionId}>
-          − Wrong
+  return (
+    <article className="border rounded-lg p-3">
+      <header className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold">{s.name}</h3>
+          <div className="text-xs text-gray-600">
+            {s.skill_type} · {s.method}
+          </div>
+        </div>
+        <div className="text-xl tabular-nums">{percent}</div>
+      </header>
+
+      <div className="mt-3 flex gap-2">
+        <button
+          className="px-3 py-2 border rounded-lg"
+          onClick={() => onCorrect(s.id)}
+          disabled={!canAct}
+        >
+          Correct
         </button>
-        <button className="px-3 py-2 border rounded-lg" onClick={() => onCorrect(s.id)} disabled={!sessionId}>
-          + Correct
+        <button
+          className="px-3 py-2 border rounded-lg"
+          onClick={() => onWrong(s.id)}
+          disabled={!canAct}
+        >
+          Wrong
         </button>
       </div>
     </article>

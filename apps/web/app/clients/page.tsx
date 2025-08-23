@@ -1,33 +1,45 @@
 "use client";
+
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
-
-type Client = { id: number; name: string; birthdate: string; info?: string | null };
+import type { Client } from "../../lib/types";
 
 export default function ClientsPage() {
   const [items, setItems] = useState<Client[] | null>(null);
 
   useEffect(() => {
-    api.clients.list().then(setItems).catch(() => setItems([]));
+    api.clients
+      .list()
+      .then(setItems)
+      .catch(() => setItems([]));
   }, []);
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="flex items-center justify-between">
-        <a href="/dashboard/bcba" className="px-3 py-2 border rounded-lg hover:bg-gray-50">← Back to Dashboard</a>
-        <a href="/clients/new" className="px-3 py-2 border rounded-lg hover:bg-gray-50">+ Add Client</a>
-      </div>
+    <main className="min-h-screen p-6 space-y-4">
+      <header className="flex items-center justify-between">
+        <a href="/dashboard/bcba" className="underline">
+          ← Back to Dashboard
+        </a>
+        <a href="/clients/new" className="px-3 py-2 border rounded-lg hover:bg-gray-50">
+          + Add Client
+        </a>
+      </header>
 
-      <h1 className="text-2xl font-bold mt-6 mb-4">Clients</h1>
+      <h1 className="text-2xl font-semibold">Clients</h1>
 
       {!items && <p>Loading…</p>}
-      {items && items.length === 0 && <p className="text-gray-600">No clients yet.</p>}
+
+      {items && items.length === 0 && <p>No clients yet.</p>}
+
       {items && items.length > 0 && (
-        <ul className="divide-y">
+        <ul className="space-y-3">
           {items.map((c) => (
-            <li key={c.id} className="py-3">
-              <a href={`/clients/${c.id}`} className="font-medium hover:underline">{c.name}</a>
+            <li key={c.id} className="border rounded-lg p-3">
+              <a className="underline" href={`/clients/${c.id}`}>
+                {c.name}
+              </a>
               <div className="text-sm text-gray-600">DOB: {c.birthdate}</div>
+              {c.info ? <div className="text-sm mt-1">{c.info}</div> : null}
             </li>
           ))}
         </ul>

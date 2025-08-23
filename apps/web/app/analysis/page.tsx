@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   LineChart,
   Line,
@@ -10,90 +11,152 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { api } from "../../lib/api";
+import type { Client, Behavior, Skill, DatedPoint as Point } from "../../lib/types";
 
-type Client = { id: number; name: string; birthdate: string };
-
-// Behaviors
-type Behavior = {
-  id: number;
-  client_id: number;
-  name: string;
-  method: "FREQUENCY" | "DURATION" | "MTS" | "INTERVAL";
-  settings: any;
-};
 type BehaviorMeta = { id: number; name: string; method: string };
-
-// Skills (with skill_type)
-type Skill = { id: number; client_id: number; name: string; method: "PERCENTAGE"; skill_type: string };
 type SkillMeta = { id: number; name: string; method: string; skill_type?: string };
 
-type Point = { date: string; value: number; session_count?: number };
-
 export default function AnalysisPage() {
+  // ---- Data sources ----
   const [clients, setClients] = useState<Client[]>([]);
-  const [clientId, setClientId] = useState<number | "">("");
-
   const [behaviors, setBehaviors] = useState<Behavior[]>([]);
-  const [behaviorId, setBehaviorId] = useState<number | "">("");
-  const [behaviorMeta, setBehaviorMeta] = useState<BehaviorMeta | null>(null);
-
   const [skills, setSkills] = useState<Skill[]>([]);
+
+  // ---- Selections ----
+  const [clientId, setClientId] = useState<number | "">("");
+  const [behaviorId, setBehaviorId] = useState<number | "">("");
   const [skillId, setSkillId] = useState<number | "">("");
-  const [skillMeta, setSkillMeta] = useState<SkillMeta | null>(null);
 
+  // ---- Analysis state ----
   const [points, setPoints] = useState<Point[]>([]);
+  const [behaviorMeta, setBehaviorMeta] = useState<BehaviorMeta | null>(null);
+  const [skillMeta, setSkillMeta] = useState<SkillMeta | null>(null);
   const [loading, setLoading] = useState(false);
-  const [debug, setDebug] = useState<any>(null);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
 
+  // Track component mount to avoid setState after unmount
+  const mounted = useRef(true);
   useEffect(() => {
-    api.clients.list().then(setClients).catch(() => setClients([]));
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
+  // Load clients once
   useEffect(() => {
-    setBehaviors([]); setBehaviorId(""); setBehaviorMeta(null);
-    setSkills([]); setSkillId(""); setSkillMeta(null);
-    setPoints([]); setDebug(null);
+    let ignore = false;
+    api.clients
+      .list()
+      .then((cs) => {
+        if (!ignore && mounted.current) setClients(cs);
+      })
+      .catch(() => {
+        if (!ignore && mounted.current) setClients([]);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  // When client changes: fetch behaviors & skills (cancelable)
+  useEffect(() => {
+    // Reset view in one pass
+    setBehaviors([]);
+    setBehaviorId("");
+    setBehaviorMeta(null);
+    setSkills([]);
+    setSkillId("");
+    setSkillMeta(null);
+    setPoints([]);
+    setErrMsg(null);
+
     if (!clientId) return;
 
-    api.clients.behaviors(Number(clientId)).then(setBehaviors).catch(() => setBehaviors([]));
-    api.clients.skills(Number(clientId)).then(setSkills).catch(() => setSkills([]));
+    const ac = new AbortController();
+    const { signal } = ac;
+
+    Promise.all([
+      api.clients.behaviors(Number(clientId)),
+      api.clients.skills(Number(clientId)),
+    ])
+      .then(([bs, ss]) => {
+        if (signal.aborted || !mounted.current) return;
+        setBehaviors(bs);
+        setSkills(ss);
+      })
+      .catch(() => {
+        if (signal.aborted || !mounted.current) return;
+        setBehaviors([]);
+        setSkills([]);
+      });
+
+    return () => ac.abort();
   }, [clientId]);
 
+  // Fetch analysis when a behavior or skill is selected (cancelable)
   useEffect(() => {
-    setPoints([]); setDebug(null); setBehaviorMeta(null); setSkillMeta(null);
+    // Clear current graph state in one shot
+    setPoints([]);
+    setErrMsg(null);
+    setBehaviorMeta(null);
+    setSkillMeta(null);
 
-    async function go() {
-      if (behaviorId) {
-        setLoading(true);
-        try {
+    const hasBehavior = !!behaviorId;
+    const hasSkill = !!skillId;
+
+    if (!hasBehavior && !hasSkill) return;
+
+    const ac = new AbortController();
+    const { signal } = ac;
+
+    async function run() {
+      setLoading(true);
+      try {
+        if (hasBehavior) {
           const data = await api.analysis.behavior(Number(behaviorId));
-          setDebug(data);
+          if (signal.aborted || !mounted.current) return;
           setBehaviorMeta(data.behavior);
-          const ps = (data.points || []).sort((a: Point, b: Point) => a.date.localeCompare(b.date));
-          setPoints(ps);
-        } finally {
-          setLoading(false);
+          const sorted = (data.points ?? []).slice().sort((a: Point, b: Point) => a.date.localeCompare(b.date));
+          setPoints(sorted);
+          return;
         }
-        return;
-      }
-
-      if (skillId) {
-        setLoading(true);
-        try {
+        if (hasSkill) {
           const data = await api.analysis.skill(Number(skillId));
-          setDebug(data);
+          if (signal.aborted || !mounted.current) return;
           setSkillMeta(data.skill);
-          const ps = (data.points || []).sort((a: Point, b: Point) => a.date.localeCompare(b.date));
-          setPoints(ps);
-        } finally {
-          setLoading(false);
+          const sorted = (data.points ?? []).slice().sort((a: Point, b: Point) => a.date.localeCompare(b.date));
+          setPoints(sorted);
+          return;
         }
-        return;
+      } catch (e: any) {
+        if (signal.aborted || !mounted.current) return;
+        const status = e?.status;
+        setErrMsg(
+          status === 403
+            ? "Access denied: Analysis is BCBA-only."
+            : status ? `Error ${status}: Failed to load analysis.` : "Failed to load analysis."
+        );
+      } finally {
+        if (!signal.aborted && mounted.current) setLoading(false);
       }
     }
 
-    go();
+    run();
+    return () => ac.abort();
   }, [behaviorId, skillId]);
+
+  // Exclusive selection handlers (avoid effect churn)
+  function onBehaviorChange(v: string) {
+    const id = v ? Number(v) : "";
+    setBehaviorId(id);
+    if (id !== "") setSkillId("");
+  }
+  function onSkillChange(v: string) {
+    const id = v ? Number(v) : "";
+    setSkillId(id);
+    if (id !== "") setBehaviorId("");
+  }
 
   const isSkill = !!skillMeta;
   const yDomain = useMemo<[number, number]>(() => {
@@ -103,34 +166,26 @@ export default function AnalysisPage() {
     return [0, max === 0 ? 1 : Math.ceil(max * 1.1)];
   }, [points, isSkill]);
 
-  const yLabel = isSkill
-    ? "Percent correct (%)"
-    : behaviorMeta?.method === "DURATION"
-    ? "Seconds (per date)"
-    : behaviorMeta?.method === "FREQUENCY"
-    ? "Count (per date)"
-    : "Hits (per date)";
-
-  const axisStroke = "#e5e7eb";
-  const axisTick = "#e5e7eb";
-  const gridStroke = "#374151";
-  const lineStroke = "#60a5fa";
-  const tooltipBg = "#111827";
-  const tooltipBorder = "#374151";
-  const tooltipText = "#e5e7eb";
+  const subtitle =
+    behaviorMeta
+      ? `${behaviorMeta.name} — ${behaviorMeta.method}`
+      : skillMeta
+      ? `${skillMeta.skill_type ?? ""}${skillMeta.skill_type ? " - " : ""}${skillMeta.name} — ${skillMeta.method}`
+      : "Select a behavior or skill";
 
   return (
-    <main className="min-h-screen p-6 max-w-5xl mx-auto space-y-6">
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Data Analysis</h1>
-        <a className="text-sm underline" href="/dashboard/bcba">← Back to BCBA Dashboard</a>
-      </header>
+    <main className="min-h-screen p-6 space-y-4">
+      <a className="underline" href="/dashboard/bcba">
+        ← Back to BCBA Dashboard
+      </a>
 
-      <section className="grid md:grid-cols-3 gap-4">
-        <div className="border rounded-xl p-4 space-y-2">
-          <label className="text-sm">Client</label>
+      <h1 className="text-2xl font-semibold">Data Analysis</h1>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="block">
+          <div className="text-sm mb-1">Client</div>
           <select
-            className="w-full border rounded px-3 py-2 bg-transparent"
+            className="w-full border rounded px-3 py-2"
             value={clientId}
             onChange={(e) => setClientId(e.target.value ? Number(e.target.value) : "")}
           >
@@ -141,18 +196,14 @@ export default function AnalysisPage() {
               </option>
             ))}
           </select>
-        </div>
+        </label>
 
-        <div className="border rounded-xl p-4 space-y-2">
-          <label className="text-sm">Behavior</label>
+        <label className="block">
+          <div className="text-sm mb-1">Behavior</div>
           <select
-            className="w-full border rounded px-3 py-2 bg-transparent"
+            className="w-full border rounded px-3 py-2"
             value={behaviorId}
-            onChange={(e) => {
-              const v = e.target.value ? Number(e.target.value) : "";
-              setBehaviorId(v);
-              if (v !== "") setSkillId("");
-            }}
+            onChange={(e) => onBehaviorChange(e.target.value)}
             disabled={!clientId}
           >
             <option value="">-- choose behavior --</option>
@@ -162,18 +213,14 @@ export default function AnalysisPage() {
               </option>
             ))}
           </select>
-        </div>
+        </label>
 
-        <div className="border rounded-xl p-4 space-y-2">
-          <label className="text-sm">Skill</label>
+        <label className="block">
+          <div className="text-sm mb-1">Skill</div>
           <select
-            className="w-full border rounded px-3 py-2 bg-transparent"
+            className="w-full border rounded px-3 py-2"
             value={skillId}
-            onChange={(e) => {
-              const v = e.target.value ? Number(e.target.value) : "";
-              setSkillId(v);
-              if (v !== "") setBehaviorId("");
-            }}
+            onChange={(e) => onSkillChange(e.target.value)}
             disabled={!clientId}
           >
             <option value="">-- choose skill --</option>
@@ -183,55 +230,46 @@ export default function AnalysisPage() {
               </option>
             ))}
           </select>
-        </div>
-      </section>
+        </label>
+      </div>
 
-      <section className="border rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">
-            {behaviorMeta
-              ? `${behaviorMeta.name} — ${behaviorMeta.method}`
-              : skillMeta
-              ? `${skillMeta.skill_type ?? ""}${skillMeta.skill_type ? " - " : ""}${skillMeta.name} — ${skillMeta.method}`
-              : "Select a behavior or skill"}
-          </div>
-          <div className="text-sm text-gray-400">{loading ? "Loading…" : null}</div>
-        </div>
+      <div className="text-sm text-gray-600">{subtitle}</div>
 
-        {(behaviorMeta || skillMeta) && points.length === 0 && !loading && (
-          <p className="text-gray-400 text-sm">No data yet for this selection.</p>
-        )}
+      {loading && <p>Loading…</p>}
+      {errMsg && !loading && <p className="text-red-500">{errMsg}</p>}
 
-        <div style={{ width: "100%", height: 320 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={points} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
-              <CartesianGrid stroke={gridStroke} strokeDasharray="3 3" />
-              <XAxis dataKey="date" stroke={axisStroke} tick={{ fill: axisTick }} />
-              <YAxis
-                domain={yDomain}
-                stroke={axisStroke}
-                tick={{ fill: axisTick }}
-                label={{ value: yLabel, angle: -90, position: "insideLeft", fill: axisTick }}
-              />
+      {(behaviorMeta || skillMeta) && points.length === 0 && !loading && !errMsg && (
+        <p>No data yet for this selection.</p>
+      )}
+
+      {points.length > 0 && !errMsg && (
+        <div className="w-full">
+          <ResponsiveContainer width="100%" height={320}>
+            <LineChart data={points}>
+              <CartesianGrid stroke="#374151" />
+              <XAxis dataKey="date" stroke="#e5e7eb" />
+              <YAxis domain={yDomain} stroke="#e5e7eb" />
               <Tooltip
-                contentStyle={{ backgroundColor: tooltipBg, borderColor: tooltipBorder, color: tooltipText }}
-                labelStyle={{ color: tooltipText }}
-                itemStyle={{ color: tooltipText }}
+                contentStyle={{
+                  background: "#111827",
+                  borderColor: "#374151",
+                  color: "#e5e7eb",
+                }}
               />
-              <Line type="monotone" dataKey="value" stroke={lineStroke} dot={{ r: 4 }} />
+              <Line type="monotone" dataKey="value" stroke="#60a5fa" dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
+      )}
 
-        {process.env.NODE_ENV !== "production" && debug && (
-          <details className="mt-2">
-            <summary className="cursor-pointer text-sm text-gray-400">Debug payload</summary>
-            <pre className="text-xs whitespace-pre-wrap opacity-70">
-              {JSON.stringify(debug, null, 2)}
-            </pre>
-          </details>
-        )}
-      </section>
+      {process.env.NODE_ENV !== "production" && !errMsg && (
+        <details className="mt-4">
+          <summary className="cursor-pointer">Debug</summary>
+          <pre className="text-xs mt-2 p-3 bg-gray-900 text-gray-100 rounded">
+            {JSON.stringify({ behaviorMeta, skillMeta, pointsCount: points.length }, null, 2)}
+          </pre>
+        </details>
+      )}
     </main>
   );
 }

@@ -1,14 +1,6 @@
 "use client";
-type Method = "FREQUENCY" | "DURATION" | "INTERVAL" | "MTS";
-type Behavior = {
-  id: number;
-  client_id: number;
-  name: string;
-  description?: string | null;
-  method: Method;
-  settings: Record<string, any>;
-  created_at: string;
-};
+
+import type { Behavior, DataCollectionMethod as Method } from "../../lib/types";
 
 export default function BehaviorCard({
   b,
@@ -33,55 +25,79 @@ export default function BehaviorCard({
   onStop: (id: number) => void;
   onHit: (id: number) => void;
 }) {
+  const canAct = !!sessionId;
+
   return (
-    <article className="border rounded-xl p-4 space-y-2">
-      <div className="flex items-center justify-between">
+    <article className="border rounded-lg p-3">
+      <header className="flex items-center justify-between">
         <div>
-          <div className="font-semibold">{b.name}</div>
+          <h3 className="font-semibold">{b.name}</h3>
           <div className="text-xs text-gray-600">
-            Method: {b.method}
-            {b.settings?.interval_seconds ? ` · interval ${b.settings.interval_seconds}s` : ""}
+            Method: {b.method as Method}
+            {b.description ? ` — ${b.description}` : null}
           </div>
         </div>
+        {b.method === "FREQUENCY" && (
+          <div className="text-2xl tabular-nums">{count}</div>
+        )}
+        {b.method === "DURATION" && (
+          <div className="text-sm tabular-nums">{totalSeconds}s</div>
+        )}
+      </header>
+
+      {/* Controls */}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {b.method === "FREQUENCY" && (
+          <>
+            <button
+              className="px-3 py-2 border rounded-lg"
+              onClick={() => onInc(b.id)}
+              disabled={!canAct}
+            >
+              +1
+            </button>
+            <button
+              className="px-3 py-2 border rounded-lg"
+              onClick={() => onDec(b.id)}
+              disabled={!canAct}
+            >
+              −1
+            </button>
+          </>
+        )}
+
+        {b.method === "DURATION" && (
+          <>
+            {!running ? (
+              <button
+                className="px-3 py-2 border rounded-lg"
+                onClick={() => onStart(b.id)}
+                disabled={!canAct}
+              >
+                Start
+              </button>
+            ) : (
+              <button
+                className="px-3 py-2 border rounded-lg"
+                onClick={() => onStop(b.id)}
+                disabled={!canAct}
+              >
+                Stop
+              </button>
+            )}
+          </>
+        )}
+
+        {(b.method === "INTERVAL" || b.method === "MTS") && (
+          <button
+            className="px-3 py-2 border rounded-lg"
+            onClick={() => onHit(b.id)}
+            disabled={!canAct}
+          >
+            Hit
+          </button>
+        )}
       </div>
-
-      {b.method === "FREQUENCY" && (
-        <div className="flex items-center gap-2">
-          <button className="px-3 py-2 border rounded-lg" onClick={() => onDec(b.id)} disabled={!sessionId}>
-            −
-          </button>
-          <div className="min-w-[3rem] text-center font-mono">{count}</div>
-          <button className="px-3 py-2 border rounded-lg" onClick={() => onInc(b.id)} disabled={!sessionId}>
-            +
-          </button>
-        </div>
-      )}
-
-      {b.method === "DURATION" && (
-        <div className="flex items-center gap-3">
-          {!running ? (
-            <button className="px-3 py-2 border rounded-lg" onClick={() => onStart(b.id)} disabled={!sessionId}>
-              Start
-            </button>
-          ) : (
-            <button className="px-3 py-2 border rounded-lg" onClick={() => onStop(b.id)}>
-              Stop
-            </button>
-          )}
-          <div className="text-sm text-gray-700">
-            Total: {totalSeconds}s {running ? <em className="text-gray-500">(running)</em> : null}
-          </div>
-        </div>
-      )}
-
-      {(b.method === "INTERVAL" || b.method === "MTS") && (
-        <div className="flex items-center gap-3">
-          <button className="px-3 py-2 border rounded-lg" onClick={() => onHit(b.id)} disabled={!sessionId}>
-            Mark Occurred
-          </button>
-          <div className="text-sm text-gray-700">Hits: {count}</div>
-        </div>
-      )}
     </article>
   );
 }
