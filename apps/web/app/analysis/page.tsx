@@ -1,275 +1,300 @@
-"use client";
+# apps/api/app/routers/sessions.py
+from __future__ import annotations
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
-import { api } from "../../lib/api";
-import type { Client, Behavior, Skill, DatedPoint as Point } from "../../lib/types";
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any
 
-type BehaviorMeta = { id: number; name: string; method: string };
-type SkillMeta = { id: number; name: string; method: string; skill_type?: string };
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 
-export default function AnalysisPage() {
-  // ---- Data sources ----
-  const [clients, setClients] = useState<Client[]>([]);
-  const [behaviors, setBehaviors] = useState<Behavior[]>([]);
-  const [skills, setSkills] = useState<Skill[]>([]);
+from ..db import get_db
+from ..models import (
+    User, Role, Client, Behavior, Skill,
+    BehaviorSession, BehaviorEvent, SkillEvent,
+)
+from ..deps import (
+    get_current_user,
+    require_bcba,
+    require_rbt_or_bcba,   # RBT or BCBA may collect/view; BCBA only for deletion
+)
 
-  // ---- Selections ----
-  const [clientId, setClientId] = useState<number | "">("");
-  const [behaviorId, setBehaviorId] = useState<number | "">("");
-  const [skillId, setSkillId] = useState<number | "">("");
+router = APIRouter(prefix="/sessions", tags=["sessions"])
 
-  // ---- Analysis state ----
-  const [points, setPoints] = useState<Point[]>([]);
-  const [behaviorMeta, setBehaviorMeta] = useState<BehaviorMeta | null>(null);
-  const [skillMeta, setSkillMeta] = useState<SkillMeta | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [errMsg, setErrMsg] = useState<string | null>(null);
+# ----------------------
+# Start session (RBT or BCBA)
+# ----------------------
+@router.post("/start")
+def start_session(
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    client_id = payload.get("client_id")
+    date_str = payload.get("date")  # yyyy-mm-dd (retained for UI; we store actual timestamp)
+    if not client_id or not date_str:
+        raise HTTPException(400, "client_id and date are required")
 
-  // Track component mount to avoid setState after unmount
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+    client = db.query(Client).filter(Client.id == client_id).first()
+    if not client:
+        raise HTTPException(404, "Client not found")
 
-  // Load clients once
-  useEffect(() => {
-    let ignore = false;
-    api.clients
-      .list()
-      .then((cs) => {
-        if (!ignore && mounted.current) setClients(cs);
-      })
-      .catch(() => {
-        if (!ignore && mounted.current) setClients([]);
-      });
-    return () => {
-      ignore = true;
-    };
-  }, []);
+    s = BehaviorSession(client_id=client_id, started_at=datetime.utcnow())
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s.as_dict()
 
-  // When client changes: fetch behaviors & skills (cancelable)
-  useEffect(() => {
-    // Reset view in one pass
-    setBehaviors([]);
-    setBehaviorId("");
-    setBehaviorMeta(null);
-    setSkills([]);
-    setSkillId("");
-    setSkillMeta(null);
-    setPoints([]);
-    setErrMsg(null);
+# ------------------------------------------
+# Post behavior events to a session (RBT/BCBA)
+# ------------------------------------------
+@router.post("/{session_id}/events")
+def post_behavior_events(
+    session_id: int,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, "Session not found")
 
-    if (!clientId) return;
+    events = payload.get("events") or []
+    created = 0
+    for e in events:
+        behavior_id = e.get("behavior_id")
+        event_type = e.get("event_type")
+        value = e.get("value")
+        happened_at = e.get("happened_at")
+        extra = e.get("extra")
 
-    const ac = new AbortController();
-    const { signal } = ac;
+        if not behavior_id or not event_type or not happened_at:
+            continue
 
-    Promise.all([
-      api.clients.behaviors(Number(clientId)),
-      api.clients.skills(Number(clientId)),
-    ])
-      .then(([bs, ss]) => {
-        if (signal.aborted || !mounted.current) return;
-        setBehaviors(bs);
-        setSkills(ss);
-      })
-      .catch(() => {
-        if (signal.aborted || !mounted.current) return;
-        setBehaviors([]);
-        setSkills([]);
-      });
+        be = BehaviorEvent(
+            session_id=session_id,
+            behavior_id=behavior_id,
+            event_type=event_type,
+            value=value,
+            happened_at=datetime.fromisoformat(happened_at),
+            extra=extra or None,
+        )
+        db.add(be)
+        created += 1
 
-    return () => ac.abort();
-  }, [clientId]);
+    db.commit()
+    return {"ok": True, "created": created}
 
-  // Fetch analysis when a behavior or skill is selected (cancelable)
-  useEffect(() => {
-    // Clear current graph state in one shot
-    setPoints([]);
-    setErrMsg(null);
-    setBehaviorMeta(null);
-    setSkillMeta(null);
+# ---------------------------------------
+# Post skill events to a session (RBT/BCBA)
+# ---------------------------------------
+@router.post("/{session_id}/skill-events")
+def post_skill_events(
+    session_id: int,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, "Session not found")
 
-    const hasBehavior = !!behaviorId;
-    const hasSkill = !!skillId;
+    events = payload.get("events") or []
+    created = 0
+    for e in events:
+        skill_id = e.get("skill_id")
+        event_type = e.get("event_type")
+        happened_at = e.get("happened_at")
 
-    if (!hasBehavior && !hasSkill) return;
+        if not skill_id or not event_type or not happened_at:
+            continue
 
-    const ac = new AbortController();
-    const { signal } = ac;
+        se = SkillEvent(
+            session_id=session_id,
+            skill_id=skill_id,
+            event_type=event_type,
+            happened_at=datetime.fromisoformat(happened_at),
+        )
+        db.add(se)
+        created += 1
 
-    async function run() {
-      setLoading(true);
-      try {
-        if (hasBehavior) {
-          const data = await api.analysis.behavior(Number(behaviorId));
-          if (signal.aborted || !mounted.current) return;
-          setBehaviorMeta(data.behavior);
-          const sorted = (data.points ?? []).slice().sort((a: Point, b: Point) => a.date.localeCompare(b.date));
-          setPoints(sorted);
-          return;
-        }
-        if (hasSkill) {
-          const data = await api.analysis.skill(Number(skillId));
-          if (signal.aborted || !mounted.current) return;
-          setSkillMeta(data.skill);
-          const sorted = (data.points ?? []).slice().sort((a: Point, b: Point) => a.date.localeCompare(b.date));
-          setPoints(sorted);
-          return;
-        }
-      } catch (e: any) {
-        if (signal.aborted || !mounted.current) return;
-        const status = e?.status;
-        setErrMsg(
-          status === 403
-            ? "Access denied: Analysis is BCBA-only."
-            : status ? `Error ${status}: Failed to load analysis.` : "Failed to load analysis."
-        );
-      } finally {
-        if (!signal.aborted && mounted.current) setLoading(false);
-      }
+    db.commit()
+    return {"ok": True, "created": created}
+
+# -------------------
+# End session (RBT/BCBA)
+# -------------------
+@router.post("/{session_id}/end")
+def end_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s.ended_at:
+        return s.as_dict()
+    s.ended_at = datetime.utcnow()
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s.as_dict()
+
+# ---------------------------------------------------
+# List/search sessions by date (and optional client) (RBT/BCBA)
+# ---------------------------------------------------
+@router.get("")
+def list_sessions(
+    date_from: Optional[date] = Query(None, description="yyyy-mm-dd"),
+    date_to: Optional[date] = Query(None, description="yyyy-mm-dd (inclusive)"),
+    client_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    q = db.query(BehaviorSession).options(joinedload(BehaviorSession.client))
+    if client_id:
+        q = q.filter(BehaviorSession.client_id == client_id)
+    if date_from:
+        q = q.filter(func.date(BehaviorSession.started_at) >= date_from)
+    if date_to:
+        q = q.filter(func.date(BehaviorSession.started_at) <= date_to)
+
+    sessions = q.order_by(BehaviorSession.started_at.desc()).all()
+    out = []
+    for s in sessions:
+        behavior_count = db.query(func.count(BehaviorEvent.id)).filter(BehaviorEvent.session_id == s.id).scalar() or 0
+        skill_count = db.query(func.count(SkillEvent.id)).filter(SkillEvent.session_id == s.id).scalar() or 0
+        out.append({
+            "id": s.id,
+            "client_id": s.client_id,
+            "client_name": s.client.name if s.client else None,
+            "date": s.started_at.date().isoformat(),
+            "started_at": s.started_at.isoformat(),
+            "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+            "behavior_event_count": behavior_count,
+            "skill_event_count": skill_count,
+        })
+    return out
+
+# ---------------------------------------------------
+# Session details grouped by behavior/skill targets (RBT/BCBA)
+# ---------------------------------------------------
+@router.get("/{session_id}/details")
+def session_details(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    s = (
+        db.query(BehaviorSession)
+        .options(joinedload(BehaviorSession.client))
+        .filter(BehaviorSession.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(404, "Session not found")
+
+    bevts = (
+        db.query(BehaviorEvent, Behavior)
+        .join(Behavior, Behavior.id == BehaviorEvent.behavior_id)
+        .filter(BehaviorEvent.session_id == s.id)
+        .order_by(BehaviorEvent.happened_at.asc(), BehaviorEvent.id.asc())
+        .all()
+    )
+    sevts = (
+        db.query(SkillEvent, Skill)
+        .join(Skill, Skill.id == SkillEvent.skill_id)
+        .filter(SkillEvent.session_id == s.id)
+        .order_by(SkillEvent.happened_at.asc(), SkillEvent.id.asc())
+        .all()
+    )
+
+    behaviors: Dict[int, Dict[str, Any]] = {}
+    for e, b in bevts:
+        group = behaviors.setdefault(
+            b.id,
+            {"behavior": {"id": b.id, "name": b.name, "method": b.method}, "events": []},
+        )
+        group["events"].append({
+            "id": e.id,
+            "event_type": e.event_type,
+            "value": e.value,
+            "happened_at": e.happened_at.isoformat(),
+            "extra": e.extra or None,
+        })
+
+    skills: Dict[int, Dict[str, Any]] = {}
+    for e, sk in sevts:
+        group = skills.setdefault(
+            sk.id,
+            {"skill": {"id": sk.id, "name": sk.name, "skill_type": sk.skill_type}, "events": []},
+        )
+        group["events"].append({
+            "id": e.id,
+            "event_type": e.event_type,
+            "happened_at": e.happened_at.isoformat(),
+        })
+
+    return {
+        "id": s.id,
+        "client": {"id": s.client_id, "name": s.client.name if s.client else None},
+        "date": s.started_at.date().isoformat(),
+        "started_at": s.started_at.isoformat(),
+        "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+        "behaviors": list(behaviors.values()),
+        "skills": list(skills.values()),
     }
 
-    run();
-    return () => ac.abort();
-  }, [behaviorId, skillId]);
+# -----------------------------------
+# Delete a single behavior event (BCBA)
+# -----------------------------------
+@router.delete("/events/behavior/{event_id}", status_code=204)
+def delete_behavior_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_bcba),
+):
+    evt = db.query(BehaviorEvent).filter(BehaviorEvent.id == event_id).first()
+    if not evt:
+        raise HTTPException(404, "Behavior event not found")
+    db.delete(evt)
+    db.commit()
+    return
 
-  // Exclusive selection handlers (avoid effect churn)
-  function onBehaviorChange(v: string) {
-    const id = v ? Number(v) : "";
-    setBehaviorId(id);
-    if (id !== "") setSkillId("");
-  }
-  function onSkillChange(v: string) {
-    const id = v ? Number(v) : "";
-    setSkillId(id);
-    if (id !== "") setBehaviorId("");
-  }
+# -------------------------------
+# Delete a single skill event (BCBA)
+# -------------------------------
+@router.delete("/events/skill/{event_id}", status_code=204)
+def delete_skill_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_bcba),
+):
+    evt = db.query(SkillEvent).filter(SkillEvent.id == event_id).first()
+    if not evt:
+        raise HTTPException(404, "Skill event not found")
+    db.delete(evt)
+    db.commit()
+    return
 
-  const isSkill = !!skillMeta;
-  const yDomain = useMemo<[number, number]>(() => {
-    if (isSkill) return [0, 100];
-    if (!points || points.length === 0) return [0, 1];
-    const max = Math.max(...points.map((p) => p.value ?? 0));
-    return [0, max === 0 ? 1 : Math.ceil(max * 1.1)];
-  }, [points, isSkill]);
+# ------------------------------------------
+# Delete an entire session and its data (BCBA)
+# ------------------------------------------
+@router.delete("/{session_id}", status_code=204)
+def delete_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_bcba),
+):
+    s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, "Session not found")
 
-  const subtitle =
-    behaviorMeta
-      ? `${behaviorMeta.name} — ${behaviorMeta.method}`
-      : skillMeta
-      ? `${skillMeta.skill_type ?? ""}${skillMeta.skill_type ? " - " : ""}${skillMeta.name} — ${skillMeta.method}`
-      : "Select a behavior or skill";
+    # Explicit deletes for portability (works even without FK ON DELETE CASCADE)
+    db.query(BehaviorEvent).filter(BehaviorEvent.session_id == session_id).delete(synchronize_session=False)
+    db.query(SkillEvent).filter(SkillEvent.session_id == session_id).delete(synchronize_session=False)
 
-  return (
-    <main className="min-h-screen p-6 space-y-4">
-      <a className="underline" href="/dashboard/bcba">
-        ← Back to BCBA Dashboard
-      </a>
-
-      <h1 className="text-2xl font-semibold">Data Analysis</h1>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <label className="block">
-          <div className="text-sm mb-1">Client</div>
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value ? Number(e.target.value) : "")}
-          >
-            <option value="">-- choose client --</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} (DOB {c.birthdate})
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="block">
-          <div className="text-sm mb-1">Behavior</div>
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={behaviorId}
-            onChange={(e) => onBehaviorChange(e.target.value)}
-            disabled={!clientId}
-          >
-            <option value="">-- choose behavior --</option>
-            {behaviors.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name} · {b.method}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="block">
-          <div className="text-sm mb-1">Skill</div>
-          <select
-            className="w-full border rounded px-3 py-2"
-            value={skillId}
-            onChange={(e) => onSkillChange(e.target.value)}
-            disabled={!clientId}
-          >
-            <option value="">-- choose skill --</option>
-            {skills.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.skill_type} - {s.name} · {s.method}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="text-sm text-gray-600">{subtitle}</div>
-
-      {loading && <p>Loading…</p>}
-      {errMsg && !loading && <p className="text-red-500">{errMsg}</p>}
-
-      {(behaviorMeta || skillMeta) && points.length === 0 && !loading && !errMsg && (
-        <p>No data yet for this selection.</p>
-      )}
-
-      {points.length > 0 && !errMsg && (
-        <div className="w-full">
-          <ResponsiveContainer width="100%" height={320}>
-            <LineChart data={points}>
-              <CartesianGrid stroke="#374151" />
-              <XAxis dataKey="date" stroke="#e5e7eb" />
-              <YAxis domain={yDomain} stroke="#e5e7eb" />
-              <Tooltip
-                contentStyle={{
-                  background: "#111827",
-                  borderColor: "#374151",
-                  color: "#e5e7eb",
-                }}
-              />
-              <Line type="monotone" dataKey="value" stroke="#60a5fa" dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {process.env.NODE_ENV !== "production" && !errMsg && (
-        <details className="mt-4">
-          <summary className="cursor-pointer">Debug</summary>
-          <pre className="text-xs mt-2 p-3 bg-gray-900 text-gray-100 rounded">
-            {JSON.stringify({ behaviorMeta, skillMeta, pointsCount: points.length }, null, 2)}
-          </pre>
-        </details>
-      )}
-    </main>
-  );
-}
+    db.delete(s)
+    db.commit()
+    return

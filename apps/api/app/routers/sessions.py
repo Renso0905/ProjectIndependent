@@ -1,165 +1,300 @@
 # apps/api/app/routers/sessions.py
-from datetime import datetime, date as date_cls
-from typing import Dict, Any, Optional, List
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 
 from ..db import get_db
-from ..models import BehaviorSession, BehaviorEvent, Behavior, Client, Skill, SkillEvent
-from ..deps import require_user
+from ..models import (
+    User, Role, Client, Behavior, Skill,
+    BehaviorSession, BehaviorEvent, SkillEvent,
+)
+from ..deps import (
+    get_current_user,
+    require_bcba,
+    require_rbt_or_bcba,   # RBT or BCBA may collect/view; BCBA only for deletion
+)
 
-router = APIRouter()
+router = APIRouter(prefix="/sessions", tags=["sessions"])
 
-def _parse_started_at(payload: Dict[str, Any]) -> datetime:
-    started_at_str = payload.get("started_at")
-    if isinstance(started_at_str, str) and started_at_str:
-        try:
-            return datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
-        except Exception:
-            pass
-    date_str = payload.get("date")
-    if isinstance(date_str, str) and date_str:
-        try:
-            d = date_cls.fromisoformat(date_str)
-            return datetime(d.year, d.month, d.day, 0, 0, 0)
-        except Exception:
-            pass
-    return datetime.utcnow()
-
-@router.post("/sessions/start")
-def start_session(payload: Dict[str, Any], db: Session = Depends(get_db), _user=Depends(require_user)):
+# ----------------------
+# Start session (RBT or BCBA)
+# ----------------------
+@router.post("/start")
+def start_session(
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
     client_id = payload.get("client_id")
-    if not isinstance(client_id, int):
-        raise HTTPException(400, detail="client_id (int) is required")
-    c = db.query(Client).filter(Client.id == client_id).first()
-    if not c:
-        raise HTTPException(404, detail="Client not found")
+    date_str = payload.get("date")  # yyyy-mm-dd (retained for UI; we store actual timestamp)
+    if not client_id or not date_str:
+        raise HTTPException(400, "client_id and date are required")
 
-    started_at = _parse_started_at(payload)
-    s = BehaviorSession(client_id=client_id, started_at=started_at)
+    client = db.query(Client).filter(Client.id == client_id).first()
+    if not client:
+        raise HTTPException(404, "Client not found")
+
+    s = BehaviorSession(client_id=client_id, started_at=datetime.utcnow())
     db.add(s)
     db.commit()
     db.refresh(s)
     return s.as_dict()
 
-@router.post("/sessions/{session_id}/events")
-def add_events(
+# ------------------------------------------
+# Post behavior events to a session (RBT/BCBA)
+# ------------------------------------------
+@router.post("/{session_id}/events")
+def post_behavior_events(
     session_id: int,
     payload: Dict[str, Any],
     db: Session = Depends(get_db),
-    _user=Depends(require_user)
+    _user: User = Depends(require_rbt_or_bcba),
 ):
     s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
     if not s:
-        raise HTTPException(404, detail="Session not found")
+        raise HTTPException(404, "Session not found")
 
     events = payload.get("events") or []
-    if not isinstance(events, list):
-        raise HTTPException(400, detail="events must be a list")
-
     created = 0
     for e in events:
         behavior_id = e.get("behavior_id")
-        event_type = (e.get("event_type") or "").upper()
+        event_type = e.get("event_type")
         value = e.get("value")
-        happened_at_str = e.get("happened_at")
-        extra = e.get("extra") or None
+        happened_at = e.get("happened_at")
+        extra = e.get("extra")
 
-        if not isinstance(behavior_id, int) or event_type not in {"INC", "DEC", "START", "STOP", "HIT"}:
+        if not behavior_id or not event_type or not happened_at:
             continue
 
-        b = db.query(Behavior).filter(Behavior.id == behavior_id).first()
-        if not b or b.client_id != s.client_id:
-            continue
-
-        if happened_at_str:
-            try:
-                happened_at = datetime.fromisoformat(happened_at_str.replace("Z", "+00:00"))
-            except Exception:
-                happened_at = datetime.utcnow()
-        else:
-            happened_at = datetime.utcnow()
-
-        ev = BehaviorEvent(
-            session_id=s.id,
+        be = BehaviorEvent(
+            session_id=session_id,
             behavior_id=behavior_id,
             event_type=event_type,
-            value=value if isinstance(value, int) else None,
-            happened_at=happened_at,
-            extra=extra,
+            value=value,
+            happened_at=datetime.fromisoformat(happened_at),
+            extra=extra or None,
         )
-        db.add(ev)
+        db.add(be)
         created += 1
 
     db.commit()
     return {"ok": True, "created": created}
 
-# NEW: skill events (CORRECT/WRONG)
-@router.post("/sessions/{session_id}/skill-events")
-def add_skill_events(
+# ---------------------------------------
+# Post skill events to a session (RBT/BCBA)
+# ---------------------------------------
+@router.post("/{session_id}/skill-events")
+def post_skill_events(
     session_id: int,
     payload: Dict[str, Any],
     db: Session = Depends(get_db),
-    _user=Depends(require_user),
+    _user: User = Depends(require_rbt_or_bcba),
 ):
     s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
     if not s:
-        raise HTTPException(404, detail="Session not found")
+        raise HTTPException(404, "Session not found")
 
-    events: List[Dict[str, Any]] = payload.get("events") or []
-    if not isinstance(events, list):
-        raise HTTPException(400, detail="events must be a list")
-
+    events = payload.get("events") or []
     created = 0
     for e in events:
         skill_id = e.get("skill_id")
-        event_type = (e.get("event_type") or "").upper()  # CORRECT / WRONG
-        happened_at_str = e.get("happened_at")
+        event_type = e.get("event_type")
+        happened_at = e.get("happened_at")
 
-        if not isinstance(skill_id, int) or event_type not in {"CORRECT", "WRONG"}:
+        if not skill_id or not event_type or not happened_at:
             continue
 
-        skill = db.query(Skill).filter(Skill.id == skill_id).first()
-        if not skill or skill.client_id != s.client_id:
-            continue
-
-        if happened_at_str:
-            try:
-                happened_at = datetime.fromisoformat(happened_at_str.replace("Z", "+00:00"))
-            except Exception:
-                happened_at = datetime.utcnow()
-        else:
-            happened_at = datetime.utcnow()
-
-        sev = SkillEvent(
-            session_id=s.id,
+        se = SkillEvent(
+            session_id=session_id,
             skill_id=skill_id,
             event_type=event_type,
-            happened_at=happened_at,
+            happened_at=datetime.fromisoformat(happened_at),
         )
-        db.add(sev)
+        db.add(se)
         created += 1
 
     db.commit()
     return {"ok": True, "created": created}
 
-@router.post("/sessions/{session_id}/end")
+# -------------------
+# End session (RBT/BCBA)
+# -------------------
+@router.post("/{session_id}/end")
 def end_session(
     session_id: int,
-    payload: Optional[Dict[str, Any]] = None,
     db: Session = Depends(get_db),
-    _user=Depends(require_user),
+    _user: User = Depends(require_rbt_or_bcba),
 ):
     s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
     if not s:
-        raise HTTPException(404, detail="Session not found")
-
-    if payload and isinstance(payload.get("events"), list):
-        add_events(session_id, {"events": payload["events"]}, db, _user)
-
+        raise HTTPException(404, "Session not found")
+    if s.ended_at:
+        return s.as_dict()
     s.ended_at = datetime.utcnow()
     db.add(s)
     db.commit()
     db.refresh(s)
     return s.as_dict()
+
+# ---------------------------------------------------
+# List/search sessions by date (and optional client) (RBT/BCBA)
+# ---------------------------------------------------
+@router.get("")
+def list_sessions(
+    date_from: Optional[date] = Query(None, description="yyyy-mm-dd"),
+    date_to: Optional[date] = Query(None, description="yyyy-mm-dd (inclusive)"),
+    client_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    q = db.query(BehaviorSession).options(joinedload(BehaviorSession.client))
+    if client_id:
+        q = q.filter(BehaviorSession.client_id == client_id)
+    if date_from:
+        q = q.filter(func.date(BehaviorSession.started_at) >= date_from)
+    if date_to:
+        q = q.filter(func.date(BehaviorSession.started_at) <= date_to)
+
+    sessions = q.order_by(BehaviorSession.started_at.desc()).all()
+    out = []
+    for s in sessions:
+        behavior_count = db.query(func.count(BehaviorEvent.id)).filter(BehaviorEvent.session_id == s.id).scalar() or 0
+        skill_count = db.query(func.count(SkillEvent.id)).filter(SkillEvent.session_id == s.id).scalar() or 0
+        out.append({
+            "id": s.id,
+            "client_id": s.client_id,
+            "client_name": s.client.name if s.client else None,
+            "date": s.started_at.date().isoformat(),
+            "started_at": s.started_at.isoformat(),
+            "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+            "behavior_event_count": behavior_count,
+            "skill_event_count": skill_count,
+        })
+    return out
+
+# ---------------------------------------------------
+# Session details grouped by behavior/skill targets (RBT/BCBA)
+# ---------------------------------------------------
+@router.get("/{session_id}/details")
+def session_details(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_rbt_or_bcba),
+):
+    s = (
+        db.query(BehaviorSession)
+        .options(joinedload(BehaviorSession.client))
+        .filter(BehaviorSession.id == session_id)
+        .first()
+    )
+    if not s:
+        raise HTTPException(404, "Session not found")
+
+    bevts = (
+        db.query(BehaviorEvent, Behavior)
+        .join(Behavior, Behavior.id == BehaviorEvent.behavior_id)
+        .filter(BehaviorEvent.session_id == s.id)
+        .order_by(BehaviorEvent.happened_at.asc(), BehaviorEvent.id.asc())
+        .all()
+    )
+    sevts = (
+        db.query(SkillEvent, Skill)
+        .join(Skill, Skill.id == SkillEvent.skill_id)
+        .filter(SkillEvent.session_id == s.id)
+        .order_by(SkillEvent.happened_at.asc(), SkillEvent.id.asc())
+        .all()
+    )
+
+    behaviors: Dict[int, Dict[str, Any]] = {}
+    for e, b in bevts:
+        group = behaviors.setdefault(
+            b.id,
+            {"behavior": {"id": b.id, "name": b.name, "method": b.method}, "events": []},
+        )
+        group["events"].append({
+            "id": e.id,
+            "event_type": e.event_type,
+            "value": e.value,
+            "happened_at": e.happened_at.isoformat(),
+            "extra": e.extra or None,
+        })
+
+    skills: Dict[int, Dict[str, Any]] = {}
+    for e, sk in sevts:
+        group = skills.setdefault(
+            sk.id,
+            {"skill": {"id": sk.id, "name": sk.name, "skill_type": sk.skill_type}, "events": []},
+        )
+        group["events"].append({
+            "id": e.id,
+            "event_type": e.event_type,
+            "happened_at": e.happened_at.isoformat(),
+        })
+
+    return {
+        "id": s.id,
+        "client": {"id": s.client_id, "name": s.client.name if s.client else None},
+        "date": s.started_at.date().isoformat(),
+        "started_at": s.started_at.isoformat(),
+        "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+        "behaviors": list(behaviors.values()),
+        "skills": list(skills.values()),
+    }
+
+# -----------------------------------
+# Delete a single behavior event (BCBA)
+# -----------------------------------
+@router.delete("/events/behavior/{event_id}", status_code=204)
+def delete_behavior_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_bcba),
+):
+    evt = db.query(BehaviorEvent).filter(BehaviorEvent.id == event_id).first()
+    if not evt:
+        raise HTTPException(404, "Behavior event not found")
+    db.delete(evt)
+    db.commit()
+    return
+
+# -------------------------------
+# Delete a single skill event (BCBA)
+# -------------------------------
+@router.delete("/events/skill/{event_id}", status_code=204)
+def delete_skill_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_bcba),
+):
+    evt = db.query(SkillEvent).filter(SkillEvent.id == event_id).first()
+    if not evt:
+        raise HTTPException(404, "Skill event not found")
+    db.delete(evt)
+    db.commit()
+    return
+
+# ------------------------------------------
+# Delete an entire session and its data (BCBA)
+# ------------------------------------------
+@router.delete("/{session_id}", status_code=204)
+def delete_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_bcba),
+):
+    s = db.query(BehaviorSession).filter(BehaviorSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, "Session not found")
+
+    # Explicit deletes for portability (works even without FK ON DELETE CASCADE)
+    db.query(BehaviorEvent).filter(BehaviorEvent.session_id == session_id).delete(synchronize_session=False)
+    db.query(SkillEvent).filter(SkillEvent.session_id == session_id).delete(synchronize_session=False)
+
+    db.delete(s)
+    db.commit()
+    return

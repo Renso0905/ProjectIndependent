@@ -1,8 +1,10 @@
+// apps/web/lib/types.ts
 // Single source of truth for API shapes used by the web app.
 // Keep these aligned with the backend FastAPI models.
 
 export type Role = "BCBA" | "RBT";
 
+// --- Me ---
 export interface Me {
   id: number;
   username: string;
@@ -82,4 +84,46 @@ export interface DatedPoint {
   date: string;              // server sends date (yyyy-mm-dd)
   value: number;             // count, seconds, or percentage
   session_count: number;
+}
+
+// --- NEW: Sessions list & details for deletion UI ---
+export interface SessionSummary {
+  id: number;
+  client_id: number;
+  client_name?: string | null;
+  date: string;                 // yyyy-mm-dd
+  started_at: string;           // ISO datetime
+  ended_at?: string | null;     // ISO datetime
+  behavior_event_count: number;
+  skill_event_count: number;
+}
+
+export interface BehaviorEventLite {
+  id: number;
+  event_type: "INC" | "DEC" | "START" | "STOP" | "HIT";
+  value?: number | null;
+  happened_at: string;
+  extra?: Record<string, unknown> | null;
+}
+
+export interface SkillEventLite {
+  id: number;
+  event_type: "CORRECT" | "WRONG";
+  happened_at: string;
+}
+
+export interface SessionDetails {
+  id: number;
+  client: { id: number; name?: string | null };
+  date: string;
+  started_at: string;
+  ended_at?: string | null;
+  behaviors: Array<{
+    behavior: { id: number; name: string; method: DataCollectionMethod };
+    events: BehaviorEventLite[];
+  }>;
+  skills: Array<{
+    skill: { id: number; name: string; skill_type: SkillType };
+    events: SkillEventLite[];
+  }>;
 }

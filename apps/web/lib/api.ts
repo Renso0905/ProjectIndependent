@@ -1,27 +1,30 @@
 // apps/web/lib/api.ts
-
-// 🚦 Single source of truth for ALL HTTP calls.
-// Do NOT call `fetch()` or reference `NEXT_PUBLIC_API_BASE` anywhere outside this file.
-// Pages/components must import and use `api.<method>()` only.
+//
+//  Single source of truth for ALL HTTP calls.
+//  Do NOT call `fetch()` or reference `NEXT_PUBLIC_API_BASE` anywhere outside this file.
+//  Pages/components must import and use `api.<method>()` only.
 
 import type {
   Me,
   Client,
   Behavior,
   Skill,
-  Session,
-  BehaviorEventOut,
-  SkillEventOut,
-  BehaviorAnalysis,
-  SkillAnalysis,
+  BehaviorSession,
+  BehaviorEvent,
+  SkillEvent,
+  BehaviorEventType,
+  SkillEventType,
+  DatedPoint,
+  // NEW
+  SessionSummary,
+  SessionDetails,
 } from "./types";
 
 // Re-export shared types so pages can import from either "lib/types" or "lib/api"
 export * from "./types";
 
 // ---- Base URL ----
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8001/api";
 
 // ---- Session helpers (used by apiFetch + login/logout) ----
 function getSessionHeaders(): Record<string, string> {
@@ -171,38 +174,56 @@ export const api = {
   // sessions & events
   sessions: {
     start: (client_id: number, date: string) =>
-      apiFetch<Session>("/sessions/start", {
+      apiFetch<BehaviorSession>("/sessions/start", {
         method: "POST",
         body: JSON.stringify({ client_id, date }),
       }),
 
     end: (id: number) =>
-      apiFetch<Session>(`/sessions/${id}/end`, {
+      apiFetch<BehaviorSession>(`/sessions/${id}/end`, {
         method: "POST",
         body: "{}",
       }),
 
-    postEvents: (id: number, events: BehaviorEventOut[]) =>
+    postEvents: (id: number, events: Array<{ behavior_id: number; event_type: BehaviorEventType; value?: number | null; happened_at: string; extra?: Record<string, unknown> }>) =>
       apiFetch<{ ok: boolean; created: number }>(`/sessions/${id}/events`, {
         method: "POST",
         body: JSON.stringify({ events }),
       }),
 
-    postSkillEvents: (id: number, events: SkillEventOut[]) =>
-      apiFetch<{ ok: boolean; created: number }>(
-        `/sessions/${id}/skill-events`,
-        {
-          method: "POST",
-          body: JSON.stringify({ events }),
-        }
-      ),
+    postSkillEvents: (id: number, events: Array<{ skill_id: number; event_type: SkillEventType; happened_at: string }>) =>
+      apiFetch<{ ok: boolean; created: number }>(`/sessions/${id}/skill-events`, {
+        method: "POST",
+        body: JSON.stringify({ events }),
+      }),
+
+    // NEW
+    list: (opts?: { date_from?: string; date_to?: string; client_id?: number }) => {
+      const params = new URLSearchParams();
+      if (opts?.date_from) params.set("date_from", opts.date_from);
+      if (opts?.date_to) params.set("date_to", opts.date_to);
+      if (opts?.client_id != null) params.set("client_id", String(opts.client_id));
+      const q = params.toString();
+      return apiFetch<SessionSummary[]>(`/sessions${q ? `?${q}` : ""}`);
+    },
+
+    details: (id: number) => apiFetch<SessionDetails>(`/sessions/${id}/details`),
+
+    delete: (id: number) =>
+      apiFetch<void>(`/sessions/${id}`, { method: "DELETE" }),
+
+    deleteBehaviorEvent: (eventId: number) =>
+      apiFetch<void>(`/sessions/events/behavior/${eventId}`, { method: "DELETE" }),
+
+    deleteSkillEvent: (eventId: number) =>
+      apiFetch<void>(`/sessions/events/skill/${eventId}`, { method: "DELETE" }),
   },
 
   // analysis
   analysis: {
     behavior: (behaviorId: number) =>
-      apiFetch<BehaviorAnalysis>(`/analysis/behavior/${behaviorId}/session-points`),
+      apiFetch<DatedPoint[]>(`/analysis/behavior/${behaviorId}/session-points`),
     skill: (skillId: number) =>
-      apiFetch<SkillAnalysis>(`/analysis/skill/${skillId}/session-points`),
+      apiFetch<DatedPoint[]>(`/analysis/skill/${skillId}/session-points`),
   },
 };
